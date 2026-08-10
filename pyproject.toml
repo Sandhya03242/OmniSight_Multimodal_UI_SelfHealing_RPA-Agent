@@ -1,0 +1,11 @@
+[project]
+name = "omnisight-multimodal-ui-selfhealing-rpa-agent"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.141.1",
+    "playwright>=1.62.0",
+    "uvicorn>=0.52.1",
+]
