@@ -116,8 +116,3 @@ screenshots/
 - Self-healing UI workflow
 - GitHub Pull Request automation
 
----
-
-## Author
-
-**Sandhya S**
