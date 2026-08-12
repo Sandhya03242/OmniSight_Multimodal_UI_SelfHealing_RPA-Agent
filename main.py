@@ -1,6 +1,9 @@
-def main():
-    print("Hello from omnisight-multimodal-ui-selfhealing-rpa-agent!")
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseM
 
 
-if __name__ == "__main__":
-    main()
+app = FastAPI(
+    title="OmniSight",
+    description="Multimodal UI Self-Healing & RPA Agent",
+    version="0.1.0"
+)
