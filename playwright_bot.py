@@ -1,39 +1,101 @@
 from playwright.sync_api import sync_playwright
 import os
 
-# Create the screenshots folder if it doesn't already exist
-os.makedirs("screenshots", exist_ok=True)
+
+BASE_URL = "https://www.saucedemo.com"
 
 
-def capture_homepage():
-    # Start Playwright
+def run_browser():
+
+    os.makedirs("screenshots", exist_ok=True)
+
     with sync_playwright() as p:
-        
-        # Launch Chromium browser in headless mode
+
         browser = p.chromium.launch(headless=True)
 
-        # Create a new browser page with a 1280x720 viewport
-        page = browser.new_page(
-            viewport={"width": 1280, "height": 720}
+        desktop = browser.new_page(
+            viewport={
+                "width": 1280,
+                "height": 720
+            }
         )
 
-        # Open the Shopify homepage
-        page.goto("https://www.shopify.com")
+        # 1. Open website
+        desktop.goto(BASE_URL)
 
-        # Take a full-page screenshot and save it
-        # inside the screenshots folder
-        page.screenshot(
-            path="screenshots/homepage.png",
+        desktop.screenshot(
+            path="screenshots/01_login.png",
             full_page=True
         )
 
-        # Print confirmation message
-        print("Screenshot Saved")
+        # 2. Login
+        desktop.fill("#user-name", "standard_user")
+        desktop.fill("#password", "secret_sauce")
+        desktop.click("#login-button")
 
-        # Close the browser
+        desktop.wait_for_load_state("networkidle")
+
+        desktop.screenshot(
+            path="screenshots/02_products.png",
+            full_page=True
+        )
+
+        # 3. Add product to cart
+        desktop.click("#add-to-cart-sauce-labs-backpack")
+
+        desktop.screenshot(
+            path="screenshots/03_product_added.png",
+            full_page=True
+        )
+
+        # 4. Open cart
+        desktop.click(".shopping_cart_link")
+
+        desktop.wait_for_load_state("networkidle")
+
+        desktop.screenshot(
+            path="screenshots/04_cart.png",
+            full_page=True
+        )
+
+        # 5. Checkout
+        desktop.click("#checkout")
+
+        desktop.fill("#first-name", "Test")
+        desktop.fill("#last-name", "User")
+        desktop.fill("#postal-code", "679001")
+
+        desktop.screenshot(
+            path="screenshots/05_checkout.png",
+            full_page=True
+        )
+
+        # 6. Mobile responsive screenshot
+        mobile = browser.new_page(
+            viewport={
+                "width": 390,
+                "height": 844
+            }
+        )
+
+        mobile.goto(BASE_URL)
+
+        mobile.fill("#user-name", "standard_user")
+        mobile.fill("#password", "secret_sauce")
+        mobile.click("#login-button")
+
+        mobile.wait_for_load_state("networkidle")
+
+        mobile.screenshot(
+            path="screenshots/06_mobile_products.png",
+            full_page=True
+        )
+
+        print("Browser automation completed successfully.")
+        print("Screenshots saved in ./screenshots/")
+
         browser.close()
 
 
-# Run the function only when this file is executed directly
 if __name__ == "__main__":
-    capture_homepage()
+    run_browser()
