@@ -1,39 +1,56 @@
-# OmniSight - Week 1: Browser Automation with Playwright
+# OmniSight - Week 1: Browser Automation & CI/CD Gateway
+
+**Multimodal UI Self-Healing & RPA Agent**
 
 ## Overview
 
 This is the Week 1 implementation of the **OmniSight: Multimodal UI Self-Healing & RPA Agent** project.
 
-The objective of this module is to automate browser interactions using Playwright and capture screenshots of a web page. This serves as the foundation for future AI-powered UI testing and self-healing automation.
+The goal of Week 1 is to build the foundation for automated UI testing using **FastAPI and Playwright**.
+
+OmniSight receives CI/CD build information through FastAPI, uses Playwright to automate a browser, and captures screenshots of different application states.
 
 ---
 
 ## Features
 
-- Launch Chromium browser
-- Navigate to a website
-- Capture full-page screenshots
-- Run in headless mode
-- Automatically create the screenshots directory
+- FastAPI CI/CD webhook
+- Playwright browser automation
+- Headless Chromium execution
+- Automated login and checkout flow
+- Desktop viewport testing
+- Mobile viewport testing
+- Full-page screenshots
+- Automatic screenshot directory creation
 
 ---
 
 ## Tech Stack
 
-- Python 3.11+
+- Python
+- FastAPI
+- Uvicorn
 - Playwright
 - Chromium
+- uv
 
 ---
 
 ## Project Structure
 
-```
-OmniSight_Multimodal_UI_SelfHealing_RPA-Agent/
+```text
+OmniSight/
 │
+├── main.py
 ├── playwright_bot.py
 ├── screenshots/
-│   └── homepage.png
+│   ├── 01_login.png
+│   ├── 02_products.png
+│   ├── 03_product_added.png
+│   ├── 04_cart.png
+│   ├── 05_checkout.png
+│   └── 06_mobile_products.png
+│
 ├── README.md
 └── pyproject.toml
 ```
@@ -42,77 +59,180 @@ OmniSight_Multimodal_UI_SelfHealing_RPA-Agent/
 
 ## Installation
 
-### Clone the Repository
-
-```bash
-git clone https://github.com/your-username/OmniSight_Multimodal_UI_SelfHealing_RPA-Agent.git
-
-cd OmniSight_Multimodal_UI_SelfHealing_RPA-Agent
-```
-
 ### Install Dependencies
 
-Using **uv**
+Using `uv`:
 
 ```bash
-uv sync
+uv add fastapi "uvicorn[standard]" playwright
 ```
 
-Install Playwright browsers
+### Install Chromium
 
 ```bash
-uv run python -m playwright install
+uv run playwright install chromium
 ```
 
 ---
 
-## Run the Project
+## Run FastAPI
+
+Start the FastAPI server:
+
+```bash
+uv run uvicorn main:app --reload
+```
+
+API:
+
+```text
+http://127.0.0.1:8000
+```
+
+Swagger API documentation:
+
+```text
+http://127.0.0.1:8000/docs
+```
+
+---
+
+## Run Playwright
+
+Open another terminal:
 
 ```bash
 uv run python playwright_bot.py
 ```
 
----
-
-## Output
-
-The script will:
-
-1. Launch Chromium.
-2. Open the target website.
-3. Capture a full-page screenshot.
-4. Save the image inside the `screenshots` folder.
-
-Example output:
+The automation performs the following flow:
 
 ```text
-Screenshot Saved
+Open Website
+     ↓
+Login
+     ↓
+Products
+     ↓
+Add Product
+     ↓
+Cart
+     ↓
+Checkout
+     ↓
+Capture Screenshots
+     ↓
+Mobile Testing
 ```
 
-Generated file:
+---
 
-```
+## Screenshots
+
+Screenshots are automatically saved in the `screenshots/` directory.
+
+```text
 screenshots/
-└── homepage.png
+├── 01_login.png
+├── 02_products.png
+├── 03_product_added.png
+├── 04_cart.png
+├── 05_checkout.png
+└── 06_mobile_products.png
+```
+
+---
+
+## FastAPI Build Event
+
+OmniSight provides a CI/CD webhook endpoint:
+
+```text
+POST /build-event
+```
+
+### Example Request
+
+```json
+{
+  "repository": "OmniSight",
+  "branch": "main",
+  "commit_sha": "abc123",
+  "staging_url": "https://www.saucedemo.com",
+  "build_status": "success"
+}
+```
+
+The endpoint receives build information from the CI/CD pipeline.
+
+---
+
+## GitHub Workflow
+
+```text
+Developer Push
+      ↓
+GitHub
+      ↓
+CI/CD Pipeline
+      ↓
+FastAPI
+      ↓
+Build Event
+      ↓
+Playwright
+      ↓
+Browser Testing
+      ↓
+Screenshots
+```
+
+---
+
+## Week 1 Architecture
+
+```text
+CI/CD
+  ↓
+FastAPI
+  ↓
+Build Event
+  ↓
+Playwright
+  ↓
+Browser Automation
+  ↓
+Screenshots
 ```
 
 ---
 
 ## Current Progress
 
-- ✅ Browser automation
-- ✅ Headless execution
-- ✅ Screenshot capture
-- ✅ Responsive viewport
+- ✅ FastAPI CI/CD gateway
+- ✅ Playwright browser automation
+- ✅ Headless Chromium execution
+- ✅ Desktop testing
+- ✅ Mobile viewport testing
+- ✅ Checkout flow automation
+- ✅ Automated screenshots
 
 ---
 
-## Future Enhancements
+## Week 1 Result
 
-- Capture HTML source
-- Integrate Vision Language Models (GPT-4o / LLaVA)
-- Detect UI issues automatically
-- Generate CSS fixes
-- Self-healing UI workflow
-- GitHub Pull Request automation
+The basic browser automation and CI/CD gateway are working successfully.
+
+```text
+CI/CD
+  ↓
+FastAPI
+  ↓
+Playwright
+  ↓
+Browser
+  ↓
+Screenshots
+```
+
 
