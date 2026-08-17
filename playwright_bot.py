@@ -5,6 +5,17 @@ import os
 BASE_URL = "https://www.saucedemo.com"
 
 
+def save_html(page, filename):
+    html = page.content()
+
+    with open(
+        f"screenshots/{filename}",
+        "w",
+        encoding="utf-8"
+    ) as f:
+        f.write(html)
+
+
 def run_browser():
 
     os.makedirs("screenshots", exist_ok=True)
@@ -28,6 +39,8 @@ def run_browser():
             full_page=True
         )
 
+        save_html(desktop, "01_login.html")
+
         # 2. Login
         desktop.fill("#user-name", "standard_user")
         desktop.fill("#password", "secret_sauce")
@@ -40,6 +53,8 @@ def run_browser():
             full_page=True
         )
 
+        save_html(desktop, "02_products.html")
+
         # 3. Add product to cart
         desktop.click("#add-to-cart-sauce-labs-backpack")
 
@@ -47,6 +62,8 @@ def run_browser():
             path="screenshots/03_product_added.png",
             full_page=True
         )
+
+        save_html(desktop, "03_product_added.html")
 
         # 4. Open cart
         desktop.click(".shopping_cart_link")
@@ -57,6 +74,8 @@ def run_browser():
             path="screenshots/04_cart.png",
             full_page=True
         )
+
+        save_html(desktop, "04_cart.html")
 
         # 5. Checkout
         desktop.click("#checkout")
@@ -69,6 +88,8 @@ def run_browser():
             path="screenshots/05_checkout.png",
             full_page=True
         )
+
+        save_html(desktop, "05_checkout.html")
 
         # 6. Mobile responsive screenshot
         mobile = browser.new_page(
@@ -91,8 +112,10 @@ def run_browser():
             full_page=True
         )
 
+        save_html(mobile, "06_mobile_products.html")
+
         print("Browser automation completed successfully.")
-        print("Screenshots saved in ./screenshots/")
+        print("Screenshots and HTML saved in ./screenshots/")
 
         browser.close()
 
