@@ -1,31 +1,53 @@
-# OmniSight - Week 1: Browser Automation & CI/CD Gateway
+# OmniSight - Week 1 & Week 2
 
-**Multimodal UI Self-Healing & RPA Agent**
+## Multimodal UI Self-Healing & RPA Agent
 
 ## Overview
 
-This is the Week 1 implementation of the **OmniSight: Multimodal UI Self-Healing & RPA Agent** project.
+OmniSight is a **Multimodal UI Self-Healing & RPA Agent** designed to automate UI testing, capture webpage states, analyze UI structure, and build the foundation for intelligent UI issue detection and self-healing.
 
-The goal of Week 1 is to build the foundation for automated UI testing using **FastAPI and Playwright**.
+### Week 1
 
-OmniSight receives CI/CD build information through FastAPI, uses Playwright to automate a browser, and captures screenshots of different application states.
+Week 1 focuses on building the foundation for automated browser testing using **FastAPI** and **Playwright**.
+
+OmniSight receives CI/CD build information through FastAPI, launches a headless Chromium browser using Playwright, automates a login and checkout workflow, and captures screenshots of different application states.
+
+### Week 2
+
+Week 2 extends the project by preparing the system for **multimodal UI analysis**.
+
+During this stage, OmniSight captures the raw HTML of the webpage and introduces a structured UI analysis prompt. The screenshot and HTML will later be provided together to an AI model for UI defect detection and automated fix generation.
 
 ---
 
-## Features
+# Features
+
+## Week 1 Features
 
 - FastAPI CI/CD webhook
 - Playwright browser automation
 - Headless Chromium execution
-- Automated login and checkout flow
+- Automated login flow
+- Automated product selection
+- Automated cart flow
+- Automated checkout flow
 - Desktop viewport testing
 - Mobile viewport testing
 - Full-page screenshots
 - Automatic screenshot directory creation
 
+## Week 2 Features
+
+- Raw HTML capture
+- Screenshot and HTML collection
+- Structured UI analysis prompt
+- Preparation for multimodal AI analysis
+- Preparation for UI issue detection
+- Preparation for automated code fix generation
+
 ---
 
-## Tech Stack
+# Tech Stack
 
 - Python
 - FastAPI
@@ -36,13 +58,15 @@ OmniSight receives CI/CD build information through FastAPI, uses Playwright to a
 
 ---
 
-## Project Structure
+# Project Structure
 
 ```text
 OmniSight/
 │
 ├── main.py
 ├── playwright_bot.py
+├── prompt.py
+│
 ├── screenshots/
 │   ├── 01_login.png
 │   ├── 02_products.png
@@ -53,186 +77,8 @@ OmniSight/
 │
 ├── README.md
 └── pyproject.toml
-```
 
----
 
-## Installation
 
-### Install Dependencies
-
-Using `uv`:
-
-```bash
-uv add fastapi "uvicorn[standard]" playwright
-```
-
-### Install Chromium
-
-```bash
-uv run playwright install chromium
-```
-
----
-
-## Run FastAPI
-
-Start the FastAPI server:
-
-```bash
-uv run uvicorn main:app --reload
-```
-
-API:
-
-```text
-http://127.0.0.1:8000
-```
-
-Swagger API documentation:
-
-```text
-http://127.0.0.1:8000/docs
-```
-
----
-
-## Run Playwright
-
-Open another terminal:
-
-```bash
-uv run python playwright_bot.py
-```
-
-The automation performs the following flow:
-
-```text
-Open Website
-     ↓
-Login
-     ↓
-Products
-     ↓
-Add Product
-     ↓
-Cart
-     ↓
-Checkout
-     ↓
-Capture Screenshots
-     ↓
-Mobile Testing
-```
-
----
-
-## Screenshots
-
-Screenshots are automatically saved in the `screenshots/` directory.
-
-```text
-screenshots/
-├── 01_login.png
-├── 02_products.png
-├── 03_product_added.png
-├── 04_cart.png
-├── 05_checkout.png
-└── 06_mobile_products.png
-```
-
----
-
-## FastAPI Build Event
-
-OmniSight provides a CI/CD webhook endpoint:
-
-```text
-POST /build-event
-```
-
-### Example Request
-
-```json
-{
-  "repository": "OmniSight",
-  "branch": "main",
-  "commit_sha": "abc123",
-  "staging_url": "https://www.saucedemo.com",
-  "build_status": "success"
-}
-```
-
-The endpoint receives build information from the CI/CD pipeline.
-
----
-
-## GitHub Workflow
-
-```text
-Developer Push
-      ↓
-GitHub
-      ↓
-CI/CD Pipeline
-      ↓
-FastAPI
-      ↓
-Build Event
-      ↓
-Playwright
-      ↓
-Browser Testing
-      ↓
-Screenshots
-```
-
----
-
-## Week 1 Architecture
-
-```text
-CI/CD
-  ↓
-FastAPI
-  ↓
-Build Event
-  ↓
-Playwright
-  ↓
-Browser Automation
-  ↓
-Screenshots
-```
-
----
-
-## Current Progress
-
-- ✅ FastAPI CI/CD gateway
-- ✅ Playwright browser automation
-- ✅ Headless Chromium execution
-- ✅ Desktop testing
-- ✅ Mobile viewport testing
-- ✅ Checkout flow automation
-- ✅ Automated screenshots
-
----
-
-## Week 1 Result
-
-The basic browser automation and CI/CD gateway are working successfully.
-
-```text
-CI/CD
-  ↓
-FastAPI
-  ↓
-Playwright
-  ↓
-Browser
-  ↓
-Screenshots
-```
 
 
