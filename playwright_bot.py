@@ -1,124 +1,226 @@
-from playwright.sync_api import sync_playwright
 import os
+from datetime import datetime
+from playwright.sync_api import sync_playwright
 
 
 BASE_URL = "https://www.saucedemo.com"
 
-
-def save_html(page, filename):
-    html = page.content()
-
-    with open(
-        f"screenshots/{filename}",
-        "w",
-        encoding="utf-8"
-    ) as f:
-        f.write(html)
+SCREENSHOT_DIR = "screenshots"
+HTML_DIR = "html_states"
 
 
-def run_browser():
+def run_browser_test(base_url: str = BASE_URL):
 
-    os.makedirs("screenshots", exist_ok=True)
+    os.makedirs(SCREENSHOT_DIR, exist_ok=True)
+    os.makedirs(HTML_DIR, exist_ok=True)
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    results = {
+        "status": "started",
+        "screenshots": [],
+        "html_files": [],
+        "states": []
+    }
 
     with sync_playwright() as p:
 
         browser = p.chromium.launch(headless=True)
 
-        desktop = browser.new_page(
+        page = browser.new_page(
             viewport={
                 "width": 1280,
                 "height": 720
             }
         )
 
-        # 1. Open website
-        desktop.goto(BASE_URL)
+        try:
+            # --------------------------------------------------
+            # 1. Open application
+            # --------------------------------------------------
 
-        desktop.screenshot(
-            path="screenshots/01_login.png",
-            full_page=True
-        )
+            page.goto(
+                base_url,
+                wait_until="networkidle"
+            )
 
-        save_html(desktop, "01_login.html")
+            page.screenshot(
+                path=f"{SCREENSHOT_DIR}/01_login_{timestamp}.png",
+                full_page=True
+            )
 
-        # 2. Login
-        desktop.fill("#user-name", "standard_user")
-        desktop.fill("#password", "secret_sauce")
-        desktop.click("#login-button")
+            html = page.content()
 
-        desktop.wait_for_load_state("networkidle")
+            html_path = f"{HTML_DIR}/01_login_{timestamp}.html"
 
-        desktop.screenshot(
-            path="screenshots/02_products.png",
-            full_page=True
-        )
+            with open(html_path, "w", encoding="utf-8") as file:
+                file.write(html)
 
-        save_html(desktop, "02_products.html")
+            results["screenshots"].append(
+                f"{SCREENSHOT_DIR}/01_login_{timestamp}.png"
+            )
 
-        # 3. Add product to cart
-        desktop.click("#add-to-cart-sauce-labs-backpack")
+            results["html_files"].append(html_path)
 
-        desktop.screenshot(
-            path="screenshots/03_product_added.png",
-            full_page=True
-        )
+            results["states"].append("login")
 
-        save_html(desktop, "03_product_added.html")
+            # --------------------------------------------------
+            # 2. Login
+            # --------------------------------------------------
 
-        # 4. Open cart
-        desktop.click(".shopping_cart_link")
+            page.fill(
+                "#user-name",
+                "standard_user"
+            )
 
-        desktop.wait_for_load_state("networkidle")
+            page.fill(
+                "#password",
+                "secret_sauce"
+            )
 
-        desktop.screenshot(
-            path="screenshots/04_cart.png",
-            full_page=True
-        )
+            page.click("#login-button")
 
-        save_html(desktop, "04_cart.html")
+            page.wait_for_load_state("networkidle")
 
-        # 5. Checkout
-        desktop.click("#checkout")
+            # --------------------------------------------------
+            # 3. Capture products page
+            # --------------------------------------------------
 
-        desktop.fill("#first-name", "Test")
-        desktop.fill("#last-name", "User")
-        desktop.fill("#postal-code", "679001")
+            screenshot_path = (
+                f"{SCREENSHOT_DIR}/02_products_{timestamp}.png"
+            )
 
-        desktop.screenshot(
-            path="screenshots/05_checkout.png",
-            full_page=True
-        )
+            html_path = (
+                f"{HTML_DIR}/02_products_{timestamp}.html"
+            )
 
-        save_html(desktop, "05_checkout.html")
+            page.screenshot(
+                path=screenshot_path,
+                full_page=True
+            )
 
-        # 6. Mobile responsive screenshot
-        mobile = browser.new_page(
-            viewport={
-                "width": 390,
-                "height": 844
-            }
-        )
+            html = page.content()
 
-        mobile.goto(BASE_URL)
+            with open(html_path, "w", encoding="utf-8") as file:
+                file.write(html)
 
-        mobile.fill("#user-name", "standard_user")
-        mobile.fill("#password", "secret_sauce")
-        mobile.click("#login-button")
+            results["screenshots"].append(screenshot_path)
+            results["html_files"].append(html_path)
+            results["states"].append("products")
 
-        mobile.wait_for_load_state("networkidle")
+            # --------------------------------------------------
+            # 4. Add product to cart
+            # --------------------------------------------------
 
-        mobile.screenshot(
-            path="screenshots/06_mobile_products.png",
-            full_page=True
-        )
+            page.click(
+                "button[data-test='add-to-cart-sauce-labs-backpack']"
+            )
 
-        save_html(mobile, "06_mobile_products.html")
+            page.click(".shopping_cart_link")
 
-        print("Browser automation completed successfully.")
-        print("Screenshots and HTML saved in ./screenshots/")
+            page.wait_for_load_state("networkidle")
 
-        browser.close()
+            # --------------------------------------------------
+            # 5. Capture cart
+            # --------------------------------------------------
+
+            screenshot_path = (
+                f"{SCREENSHOT_DIR}/03_cart_{timestamp}.png"
+            )
+
+            html_path = (
+                f"{HTML_DIR}/03_cart_{timestamp}.html"
+            )
+
+            page.screenshot(
+                path=screenshot_path,
+                full_page=True
+            )
+
+            html = page.content()
+
+            with open(html_path, "w", encoding="utf-8") as file:
+                file.write(html)
+
+            results["screenshots"].append(screenshot_path)
+            results["html_files"].append(html_path)
+            results["states"].append("cart")
+
+            # --------------------------------------------------
+            # 6. Checkout
+            # --------------------------------------------------
+
+            page.click("#checkout")
+
+            page.fill(
+                "#first-name",
+                "Omni"
+            )
+
+            page.fill(
+                "#last-name",
+                "Sight"
+            )
+
+            page.fill(
+                "#postal-code",
+                "680001"
+            )
+
+            page.click("#continue")
+
+            # --------------------------------------------------
+            # 7. Capture checkout overview
+            # --------------------------------------------------
+
+            screenshot_path = (
+                f"{SCREENSHOT_DIR}/04_checkout_{timestamp}.png"
+            )
+
+            html_path = (
+                f"{HTML_DIR}/04_checkout_{timestamp}.html"
+            )
+
+            page.screenshot(
+                path=screenshot_path,
+                full_page=True
+            )
+
+            html = page.content()
+
+            with open(html_path, "w", encoding="utf-8") as file:
+                file.write(html)
+
+            results["screenshots"].append(screenshot_path)
+            results["html_files"].append(html_path)
+            results["states"].append("checkout")
+
+            results["status"] = "completed"
+
+        except Exception as e:
+
+            results["status"] = "failed"
+            results["error"] = str(e)
+
+        finally:
+
+            browser.close()
+
+    return results
 
 
 if __name__ == "__main__":
-    run_browser()
+
+    result = run_browser_test()
+
+    print("\nOmniSight Browser Test")
+    print("======================")
+    print(f"Status: {result['status']}")
+
+    print("\nScreenshots:")
+    for screenshot in result["screenshots"]:
+        print(f" - {screenshot}")
+
+    print("\nHTML files:")
+    for html_file in result["html_files"]:
+        print(f" - {html_file}")
