@@ -82,3 +82,16 @@ OmniSight/
 
 
 
+# UI Analysis Prompt
+
+The prompt.py file contains a structured prompt for the future AI model.
+
+The AI will be instructed to analyze both the screenshot and raw HTML and return information such as:
+
+Whether a UI issue was detected
+Issue severity
+Issue type
+Detailed description
+Affected HTML element
+Possible root cause
+Recommended UI or CSS fix

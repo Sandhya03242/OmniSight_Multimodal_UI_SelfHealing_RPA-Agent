@@ -35,9 +35,6 @@ def run_browser_test(base_url: str = BASE_URL):
         )
 
         try:
-            # --------------------------------------------------
-            # 1. Open application
-            # --------------------------------------------------
 
             page.goto(
                 base_url,
@@ -64,9 +61,6 @@ def run_browser_test(base_url: str = BASE_URL):
 
             results["states"].append("login")
 
-            # --------------------------------------------------
-            # 2. Login
-            # --------------------------------------------------
 
             page.fill(
                 "#user-name",
@@ -82,9 +76,6 @@ def run_browser_test(base_url: str = BASE_URL):
 
             page.wait_for_load_state("networkidle")
 
-            # --------------------------------------------------
-            # 3. Capture products page
-            # --------------------------------------------------
 
             screenshot_path = (
                 f"{SCREENSHOT_DIR}/02_products_{timestamp}.png"
@@ -108,9 +99,6 @@ def run_browser_test(base_url: str = BASE_URL):
             results["html_files"].append(html_path)
             results["states"].append("products")
 
-            # --------------------------------------------------
-            # 4. Add product to cart
-            # --------------------------------------------------
 
             page.click(
                 "button[data-test='add-to-cart-sauce-labs-backpack']"
@@ -120,9 +108,7 @@ def run_browser_test(base_url: str = BASE_URL):
 
             page.wait_for_load_state("networkidle")
 
-            # --------------------------------------------------
-            # 5. Capture cart
-            # --------------------------------------------------
+
 
             screenshot_path = (
                 f"{SCREENSHOT_DIR}/03_cart_{timestamp}.png"
@@ -146,9 +132,6 @@ def run_browser_test(base_url: str = BASE_URL):
             results["html_files"].append(html_path)
             results["states"].append("cart")
 
-            # --------------------------------------------------
-            # 6. Checkout
-            # --------------------------------------------------
 
             page.click("#checkout")
 
@@ -169,9 +152,6 @@ def run_browser_test(base_url: str = BASE_URL):
 
             page.click("#continue")
 
-            # --------------------------------------------------
-            # 7. Capture checkout overview
-            # --------------------------------------------------
 
             screenshot_path = (
                 f"{SCREENSHOT_DIR}/04_checkout_{timestamp}.png"
