@@ -19,16 +19,3 @@ class SuggestedFix(BaseModel):
 class AnalysisResult(BaseModel):
     issues: List[UIIssue]
     suggested_fixes: List[SuggestedFix]
-    overall_summary: str
-
-
-class AnalyzeRequest(BaseModel):
-    screenshot_path: str
-    html_path: str
-
-
-class CIWebhookRequest(BaseModel):
-    repository: Optional[str] = None
-    branch: Optional[str] = None
-    commit_id: Optional[str] = None
-    url: Optional[str] = None
