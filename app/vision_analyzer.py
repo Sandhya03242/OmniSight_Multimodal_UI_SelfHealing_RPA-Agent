@@ -3,24 +3,24 @@ from pathlib import Path
 
 import torch
 from transformers import (
-    Qwen2VLForConditionalGeneration,
     AutoProcessor,
+    AutoModelForMultimodalLM,
 )
 
 from .models import AnalysisResult
 from .prompt import UI_ANALYSIS_PROMPT
 
 
-MODEL_ID = "Qwen/Qwen2-VL-2B-Instruct"
+MODEL_ID = "Qwen/Qwen3.5-0.8B"
 
 
-print("Loading Qwen2-VL-2B-Instruct...")
+print("Loading Qwen3.5-0.8B...")
 
 processor = AutoProcessor.from_pretrained(
     MODEL_ID
 )
 
-model = Qwen2VLForConditionalGeneration.from_pretrained(
+model = AutoModelForMultimodalLM.from_pretrained(
     MODEL_ID,
     torch_dtype=torch.float32,
     device_map="cpu"
@@ -28,7 +28,7 @@ model = Qwen2VLForConditionalGeneration.from_pretrained(
 
 model.eval()
 
-print("Qwen2-VL loaded.")
+print("Qwen3.5-0.8B loaded.")
 
 
 async def analyze_ui(
@@ -36,13 +36,8 @@ async def analyze_ui(
     html_path: str
 ) -> AnalysisResult:
 
-    screenshot = Path(
-        screenshot_path
-    )
-
-    html_file = Path(
-        html_path
-    )
+    screenshot = Path(screenshot_path)
+    html_file = Path(html_path)
 
     if not screenshot.exists():
         raise FileNotFoundError(
@@ -58,8 +53,8 @@ async def analyze_ui(
         encoding="utf-8"
     )
 
-    # Keep HTML small for CPU inference
-    html = html[:10000]
+    # Keep HTML small for faster inference
+    html = html[:6000]
 
     prompt = f"""
 {UI_ANALYSIS_PROMPT}
@@ -74,9 +69,7 @@ RAW HTML:
 Return ONLY valid JSON.
 """
 
-    print(
-        "Sending screenshot to Qwen2-VL..."
-    )
+    print("Sending screenshot to Qwen3.5-0.8B...")
 
     messages = [
         {
@@ -94,47 +87,45 @@ Return ONLY valid JSON.
         }
     ]
 
-    text = processor.apply_chat_template(
+    # Qwen3.5 recommended multimodal processing
+    inputs = processor.apply_chat_template(
         messages,
-        tokenize=False,
-        add_generation_prompt=True
+        add_generation_prompt=True,
+        tokenize=True,
+        return_dict=True,
+        return_tensors="pt",
     )
 
-    inputs = processor(
-        text=[text],
-        images=[str(screenshot)],
-        padding=True,
-        return_tensors="pt"
-    )
+    # CPU
+    inputs = inputs.to("cpu")
 
-    with torch.no_grad():
+    with torch.inference_mode():
 
         generated_ids = model.generate(
             **inputs,
-            max_new_tokens=512
+            max_new_tokens=256,
+            do_sample=False,
+            use_cache=True
         )
 
-    generated_ids_trimmed = [
-        output_ids[len(input_ids):]
-        for input_ids, output_ids
-        in zip(
-            inputs["input_ids"],
-            generated_ids
-        )
+    input_length = inputs["input_ids"].shape[-1]
+
+    generated_ids_trimmed = generated_ids[
+        :, input_length:
     ]
 
     content = processor.batch_decode(
         generated_ids_trimmed,
         skip_special_tokens=True
-    )[0]
+    )[0].strip()
 
     if not content:
         raise ValueError(
-            "Qwen2-VL returned an empty response."
+            "Qwen3.5-0.8B returned an empty response."
         )
 
     print(
-        "\n========== QWEN2-VL RESPONSE =========="
+        "\n========== QWEN3.5 RESPONSE =========="
     )
 
     print(content)
@@ -145,9 +136,7 @@ Return ONLY valid JSON.
 
     data = extract_json(content)
 
-    return AnalysisResult.model_validate(
-        data
-    )
+    return AnalysisResult.model_validate(data)
 
 
 def extract_json(
@@ -169,7 +158,6 @@ def extract_json(
         )
 
         if end != -1:
-
             content = content[
                 start:end
             ].strip()
@@ -187,7 +175,6 @@ def extract_json(
         )
 
         if end != -1:
-
             content = content[
                 start:end
             ].strip()
@@ -211,6 +198,6 @@ def extract_json(
     except json.JSONDecodeError as exc:
 
         raise ValueError(
-            "Invalid JSON returned by Qwen2-VL:\n\n"
+            "Invalid JSON returned by Qwen3.5-0.8B:\n\n"
             f"{content}"
         ) from exc
