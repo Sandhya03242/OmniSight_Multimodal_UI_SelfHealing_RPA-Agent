@@ -103,11 +103,15 @@ async def responsive_test(
 
 
 @app.post("/checkout-flow")
-async def checkout_flow():
+async def checkout_flow(
+    request: AnalyzeURLRequest
+):
 
     try:
 
-        result = await run_checkout_flow()
+        result = await run_checkout_flow(
+            url=request.url
+        )
 
         return result
 
