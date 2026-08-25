@@ -54,7 +54,7 @@ async def analyze_ui(
     )
 
     # Keep HTML small for faster inference
-    html = html[:6000]
+    html = html
 
     prompt = f"""
 {UI_ANALYSIS_PROMPT}
