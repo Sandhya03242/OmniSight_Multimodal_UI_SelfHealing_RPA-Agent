@@ -15,6 +15,7 @@ from .playwright_bot import (
 )
 
 from .vision_analyzer import analyze_ui
+from .self_healing import self_healing_loop
 
 
 app = FastAPI(
@@ -35,6 +36,10 @@ class AnalyzeRequest(BaseModel):
 class AnalyzeURLRequest(BaseModel):
     url: str
 
+class SelfHealingRequest(BaseModel):
+    url: str
+    css_code: str
+    html: str
 
 @app.get("/")
 async def root():
@@ -171,6 +176,29 @@ async def analyze(
                 generated_files
             )
         }
+
+    except Exception as exc:
+
+        raise HTTPException(
+            status_code=500,
+            detail=str(exc)
+        )
+
+
+@app.post("/self-heal")
+async def self_heal(
+    request: SelfHealingRequest
+):
+
+    try:
+
+        result = await self_healing_loop(
+            url=request.url,
+            css_code=request.css_code,
+            html_path=request.html,
+        )
+
+        return result
 
     except Exception as exc:
 
