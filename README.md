@@ -1,14 +1,14 @@
-# OmniSight — Week 1 & Week 2
+# OmniSight — Week 1, Week 2 & Week 3
 
 ## Multimodal UI Self-Healing & RPA Agent
 
-OmniSight is a multimodal UI testing system that combines **Playwright, FastAPI, and a Vision-Language Model (Qwen3.5-0.8B)** to automate browser testing, capture screenshots and HTML, detect UI issues, and generate suggested code fixes.
+OmniSight is a multimodal UI testing system that combines **Playwright, FastAPI, and a Vision-Language Model (Qwen3.5-0.8B)** to automate browser testing, capture screenshots and HTML, detect UI issues, generate suggested code fixes, and perform a self-healing validation loop.
 
-> **Current scope:** UI issue detection and fix generation.
+> **Current scope:** UI issue detection, fix generation, and self-healing validation.
 
 ---
 
-## Architecture
+# Architecture
 
 ```text
 Website
@@ -37,11 +37,27 @@ Playwright
      ┌──┴──┐
      ▼     ▼
    JSON   Code Fix
-````
+           │
+           ▼
+      Self-Healing Loop
+           │
+           ▼
+      Apply Fix
+           │
+           ▼
+    Playwright Re-test
+           │
+      ┌────┴────┐
+      ▼         ▼
+   Fixed      Still Broken
+                 │
+                 ▼
+              Re-analyze
+```
 
 ---
 
-## Tech Stack
+# Tech Stack
 
 * Python
 * FastAPI
@@ -55,7 +71,7 @@ Playwright
 
 ---
 
-## Project Structure
+# Project Structure
 
 ```text
 OmniSight/
@@ -66,7 +82,8 @@ OmniSight/
 │   ├── prompt.py
 │   ├── vision_analyzer.py
 │   ├── action_engine.py
-│   └── playwright_bot.py
+│   ├── playwright_bot.py
+│   └── self_healing.py
 │
 ├── screenshots/
 ├── outputs/
@@ -230,7 +247,7 @@ Action Engine
 
 ---
 
-## Example Detection
+# Example Detection
 
 The model can detect an exposed password field:
 
@@ -276,28 +293,248 @@ Supported fix types:
 
 ---
 
+# Week 3 — Self-Healing UI Loop
+
+Week 3 extends OmniSight from **detecting and suggesting fixes** to automatically validating whether a generated fix actually resolves the detected UI problem.
+
+The self-healing system follows a closed-loop process:
+
+```text
+Capture
+   ↓
+Analyze
+   ↓
+Detect Issue
+   ↓
+Generate Fix
+   ↓
+Apply Fix
+   ↓
+Re-run Playwright
+   ↓
+Capture New Screenshot + HTML
+   ↓
+Analyze Again
+   ↓
+Issue Resolved?
+  ┌───────┴───────┐
+ YES              NO
+  │                │
+  ▼                ▼
+Success       Generate New Fix
+                  │
+                  ▼
+              Retry Loop
+```
+
+### Self-Healing Loop
+
+The self-healing module:
+
+* Receives detected UI issues
+* Reads the generated fix
+* Applies the suggested modification
+* Re-runs the browser test
+* Captures the updated screenshot and HTML
+* Sends the updated state back to the Vision-Language Model
+* Compares the new result with the original issue
+* Determines whether the issue has been resolved
+
+### `/self-heal`
+
+```text
+POST /self-heal
+```
+
+Example flow:
+
+```text
+Initial UI
+    ↓
+Screenshot + HTML
+    ↓
+Qwen3.5-0.8B
+    ↓
+UI Issue
+    ↓
+Action Engine
+    ↓
+Suggested Fix
+    ↓
+Apply Fix
+    ↓
+Playwright Re-test
+    ↓
+New Screenshot + HTML
+    ↓
+Qwen3.5-0.8B
+    ↓
+Validation
+```
+
+### Example
+
+Initial detection:
+
+```json
+{
+  "severity": "high",
+  "issue_type": "sensitive_information_exposure",
+  "description": "Password field is visible as plain text",
+  "affected_element": "input"
+}
+```
+
+Generated fix:
+
+```html
+<input type="password">
+```
+
+After applying the fix, Playwright captures the updated page.
+
+The Vision-Language Model analyzes the new state:
+
+```json
+{
+  "status": "resolved",
+  "issue_type": "sensitive_information_exposure",
+  "confidence": 0.92
+}
+```
+
+The self-healing loop then stops because the issue has been successfully resolved.
+
+---
+
+## Retry Protection
+
+To prevent an infinite healing loop, the system uses a maximum retry count.
+
+```text
+Maximum retries
+      ↓
+   3 attempts
+```
+
+Example:
+
+```text
+Attempt 1 → Fix → Re-test → Failed
+Attempt 2 → Fix → Re-test → Failed
+Attempt 3 → Fix → Re-test → Failed
+                              ↓
+                         Stop + Report
+```
+
+If the issue cannot be resolved within the retry limit, OmniSight reports the issue instead of continuously modifying the application.
+
+---
+
+## Self-Healing Result
+
+The system produces a healing result such as:
+
+```json
+{
+  "status": "resolved",
+  "attempts": 1,
+  "issue_type": "layout_overlap",
+  "fix_type": "css",
+  "fix_file": "outputs/suggested_fix_1.css"
+}
+```
+
+For an unsuccessful healing attempt:
+
+```json
+{
+  "status": "failed",
+  "attempts": 3,
+  "issue_type": "layout_overlap",
+  "reason": "Issue still detected after maximum retries"
+}
+```
+
+---
+
+# Week 3 Pipeline
+
+The complete Week 3 pipeline is:
+
+```text
+Website
+   ↓
+Playwright
+   ↓
+Screenshot + HTML
+   ↓
+Qwen3.5-0.8B
+   ↓
+Issue Detection
+   ↓
+Action Engine
+   ↓
+Fix Generation
+   ↓
+Self-Healing Engine
+   ↓
+Apply Fix
+   ↓
+Playwright Re-test
+   ↓
+New Screenshot + HTML
+   ↓
+Qwen3.5-0.8B Validation
+   ↓
+┌──────────────────────┐
+│ Issue Resolved?      │
+└──────────┬───────────┘
+           │
+     ┌─────┴─────┐
+     ▼           ▼
+    YES          NO
+     │           │
+     ▼           ▼
+  Success      Retry
+                 │
+                 ▼
+          Maximum Retries?
+                 │
+           ┌─────┴─────┐
+           ▼           ▼
+          YES          NO
+           │           │
+           ▼           └──→ Generate New Fix
+         Failure
+```
+
+---
+
 # Installation
 
 ```bash
 git clone https://github.com/Sandhya03242/OmniSight.git
 cd OmniSight
 
-python -m venv venv
-venv\Scripts\activate
-
-pip install -r requirements.txt
+uv sync
 
 playwright install chromium
 ```
 
----
-
-# Run
-
-Start the server:
+If the virtual environment is not created automatically, run:
 
 ```bash
-uvicorn app.main:app --reload
+uv venv
+uv sync
+```
+
+### Run
+
+Start the FastAPI server:
+
+```bash
+uv run uvicorn app.main:app --reload
 ```
 
 Open Swagger:
@@ -316,6 +553,16 @@ Screenshot + HTML
 POST /analyze
       ↓
 UI Issues + Suggested Fixes
+      ↓
+POST /self-heal
+      ↓
+Apply Fix
+      ↓
+Playwright Re-test
+      ↓
+Validation
+      ↓
+Resolved / Failed
 ```
 
 For responsive testing:
@@ -324,10 +571,16 @@ For responsive testing:
 POST /responsive-test
 ```
 
-For the checkout automation:
+For checkout automation:
 
 ```text
 POST /checkout-flow
+```
+
+For self-healing:
+
+```text
+POST /self-heal
 ```
 
 ---
@@ -354,6 +607,38 @@ POST /checkout-flow
 * [x] JSON extraction
 * [x] Action Engine
 * [x] CSS/HTML/JSX fix generation
+
+## Week 3
+
+* [x] Self-healing architecture
+* [x] Automated fix application
+* [x] Playwright re-testing
+* [x] Post-fix screenshot capture
+* [x] Post-fix HTML capture
+* [x] Re-analysis after fix
+* [x] Fix validation
+* [x] Retry mechanism
+* [x] Maximum retry protection
+* [x] Healing result reporting
+* [x] Resolved / failed status
+
+---
+
+# OmniSight Evolution
+
+```text
+Week 1
+Browser Automation
+        ↓
+Week 2
+Multimodal UI Detection
+        ↓
+Week 3
+Self-Healing Automation
+```
+
+OmniSight therefore evolves from a **browser automation system** into a **multimodal UI testing and self-healing agent** capable of detecting UI problems, generating fixes, applying them, and validating the result through an automated feedback loop.
+
 
 
 
