@@ -16,6 +16,7 @@ from .playwright_bot import (
 
 from .vision_analyzer import analyze_ui
 from .self_healing import self_healing_loop
+from .github_integration import create_pull_request
 
 
 app = FastAPI(
@@ -164,28 +165,96 @@ async def analyze(request: AnalyzeRequest):
 # -----------------------------
 
 @app.post("/self-heal")
-async def self_heal(request: SelfHealingRequest):
+async def self_heal(
+    request: SelfHealingRequest
+):
 
-    html_path = Path(request.html_path)
+    html_path = Path(
+        request.html_path
+    )
 
     if not html_path.exists():
+
         raise HTTPException(
             status_code=404,
             detail="HTML file not found"
         )
 
     try:
+
+        # =============================
+        # SELF-HEALING LOOP
+        # =============================
+
         result = await self_healing_loop(
             url=request.url,
             css_code=request.css_code,
             html_path=str(html_path),
+            max_retries=3
         )
+
+        # =============================
+        # GITHUB INTEGRATION
+        # =============================
+
+        if result["status"] == "fixed":
+
+            print(
+                "\n[SUCCESS] UI issue fixed."
+            )
+
+            # Get issue information
+            issue_type = "ui-fix"
+
+            issue_description = (
+                "UI issue automatically "
+                "resolved by OmniSight."
+            )
+
+            try:
+
+                github_result = (
+                    create_pull_request(
+                        repo_name=(
+                            "Sandhya03242/"
+                            "OmniSight"
+                        ),
+
+                        source_file=(
+                            "outputs/"
+                            "suggested_fix_1.css"
+                        ),
+
+                        fixed_content=(
+                            request.css_code
+                        ),
+
+                        issue_type=issue_type,
+
+                        issue_description=(
+                            issue_description
+                        )
+                    )
+                )
+
+                result["github"] = (
+                    github_result
+                )
+
+            except Exception as github_error:
+
+                result["github"] = {
+                    "status": "failed",
+                    "error": str(
+                        github_error
+                    )
+                }
 
         return result
 
     except Exception as exc:
+
         raise HTTPException(
             status_code=500,
             detail=str(exc)
         )
-

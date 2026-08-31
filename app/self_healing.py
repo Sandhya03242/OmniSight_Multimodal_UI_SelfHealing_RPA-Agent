@@ -18,13 +18,23 @@ SCREENSHOT_DIR.mkdir(exist_ok=True)
 async def apply_css_and_verify(
     url: str,
     css_code: str,
-    html_path: str,
+    attempt: int,
 ):
     """
     Apply AI-generated CSS to the webpage,
-    capture a new screenshot, and verify
-    the result using the VLM.
+    capture the modified UI, and ask the VLM
+    to verify whether the issue is resolved.
     """
+
+    screenshot_path = (
+        SCREENSHOT_DIR
+        / f"self_healed_attempt_{attempt}.png"
+    )
+
+    html_path = (
+        OUTPUT_DIR
+        / f"self_healed_attempt_{attempt}.html"
+    )
 
     async with async_playwright() as p:
 
@@ -39,35 +49,48 @@ async def apply_css_and_verify(
             }
         )
 
-        await page.goto(
-            url,
-            wait_until="networkidle"
-        )
+        try:
 
-        # Apply generated CSS directly to the page
-        await page.add_style_tag(
-            content=css_code
-        )
+            # Open website
+            await page.goto(
+                url,
+                wait_until="networkidle"
+            )
 
-        screenshot_path = (
-            SCREENSHOT_DIR /
-            "self_healed.png"
-        )
+            # Apply AI-generated CSS
+            await page.add_style_tag(
+                content=css_code
+            )
 
-        await page.screenshot(
-            path=str(screenshot_path),
-            full_page=True
-        )
+            # Capture modified UI
+            await page.screenshot(
+                path=str(screenshot_path),
+                full_page=True
+            )
 
-        await browser.close()
+            # Capture updated DOM
+            html = await page.content()
 
-    # Verify the modified UI
+            html_path.write_text(
+                html,
+                encoding="utf-8"
+            )
+
+        finally:
+
+            await browser.close()
+
+    # Send modified UI back to VLM
     result = await analyze_ui(
         screenshot_path=str(screenshot_path),
-        html_path=html_path
+        html_path=str(html_path)
     )
 
-    return result
+    return {
+        "result": result,
+        "screenshot": str(screenshot_path),
+        "html": str(html_path)
+    }
 
 
 async def self_healing_loop(
@@ -77,47 +100,97 @@ async def self_healing_loop(
     max_retries: int = MAX_RETRIES,
 ):
     """
-    Self-healing loop:
+    Agentic self-healing loop.
 
-    1. Apply AI-generated fix
-    2. Capture new screenshot
-    3. Analyze the result
-    4. Repeat if the issue remains
+    Plan
+      ↓
+    Execute
+      ↓
+    Evaluate
+      ↓
+    Retry
     """
 
     history = []
 
-    for attempt in range(1, max_retries + 1):
+    current_css = css_code
+
+    for attempt in range(
+        1,
+        max_retries + 1
+    ):
 
         print(
-            f"\n===== SELF-HEALING ATTEMPT {attempt} ====="
+            f"\n========== "
+            f"SELF-HEALING ATTEMPT "
+            f"{attempt}/{max_retries}"
+            f" =========="
         )
 
-        result = await apply_css_and_verify(
-            url=url,
-            css_code=css_code,
-            html_path=html_path,
-        )
+        # ---------------------------------
+        # Execute
+        # ---------------------------------
+
+        try:
+
+            verification = (
+                await apply_css_and_verify(
+                    url=url,
+                    css_code=current_css,
+                    attempt=attempt
+                )
+            )
+
+        except Exception as exc:
+
+            print(
+                f"Attempt failed: {exc}"
+            )
+
+            history.append({
+                "attempt": attempt,
+                "status": "error",
+                "error": str(exc)
+            })
+
+            continue
+
+        result = verification["result"]
+
+        issues = [
+            issue.model_dump()
+            for issue in result.issues
+        ]
+
+        # ---------------------------------
+        # Record result
+        # ---------------------------------
 
         history.append({
             "attempt": attempt,
-            "issues": [
-                issue.model_dump()
-                for issue in result.issues
+            "issues": issues,
+            "screenshot": verification[
+                "screenshot"
+            ],
+            "html": verification[
+                "html"
             ]
         })
 
-        # No issues means the UI is considered fixed
+        # ---------------------------------
+        # Evaluate
+        # ---------------------------------
+
         if not result.issues:
 
             print(
-                "UI FIX VERIFIED SUCCESSFULLY"
+                "\nUI FIX VERIFIED SUCCESSFULLY"
             )
 
             output = {
                 "status": "fixed",
                 "attempts": attempt,
-                "history": history,
+                "history": history
             }
 
             save_result(output)
@@ -125,25 +198,57 @@ async def self_healing_loop(
             return output
 
         print(
-            f"{len(result.issues)} issue(s) still detected."
+            f"{len(result.issues)} "
+            f"issue(s) still detected."
         )
 
-        # Use the next generated fix if available
+        # ---------------------------------
+        # Retry with new AI-generated fix
+        # ---------------------------------
+
         if result.suggested_fixes:
 
-            css_code = result.suggested_fixes[0].code
+            next_css = None
+
+            for fix in result.suggested_fixes:
+
+                if fix.language.lower() == "css":
+
+                    next_css = fix.code
+                    break
+
+            if next_css:
+
+                current_css = next_css
+
+                print(
+                    "New CSS fix generated."
+                )
+
+            else:
+
+                print(
+                    "No CSS fix available."
+                )
+
+                break
 
         else:
 
             print(
                 "No additional fix generated."
             )
+
             break
+
+    # -------------------------------------
+    # Maximum retries reached
+    # -------------------------------------
 
     output = {
         "status": "not_fixed",
         "attempts": len(history),
-        "history": history,
+        "history": history
     }
 
     save_result(output)
@@ -151,11 +256,13 @@ async def self_healing_loop(
     return output
 
 
-def save_result(result: dict):
+def save_result(
+    result: dict
+):
 
     output_path = (
-        OUTPUT_DIR /
-        "self_healing_result.json"
+        OUTPUT_DIR
+        / "self_healing_result.json"
     )
 
     output_path.write_text(

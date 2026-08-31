@@ -19,3 +19,8 @@ class SuggestedFix(BaseModel):
 class AnalysisResult(BaseModel):
     issues: List[UIIssue]
     suggested_fixes: List[SuggestedFix]
+
+class SelfHealingRequest(BaseModel):
+    url: str
+    css_code: str
+    html_path: str
