@@ -643,3 +643,39 @@ OmniSight therefore evolves from a **browser automation system** into a **multim
 
 
 
+
+#Full pipeline
+
+GitHub Actions
+      ↓
+FastAPI Webhook
+      ↓
+OmniSight Agent
+      ↓
+Playwright
+      ↓
+Desktop / Tablet / Mobile
+      ↓
+Screenshot + HTML
+      ↓
+VLM
+      ↓
+UI Diagnosis
+      ↓
+Structured Repair Plan
+      ↓
+Safe Patch Executor
+      ↓
+Playwright Re-test
+      ↓
+VLM Verification
+      ↓
+       ┌───────────────┐
+       │ Fixed?        │
+       └───────┬───────┘
+          No   │   Yes
+          ↓    │    ↓
+       Retry   │  GitHub PR
+               │
+               ↓
+        React QA Dashboard
