@@ -1,606 +1,161 @@
 from pathlib import Path
 
-from playwright.sync_api import sync_playwright
+from playwright.async_api import async_playwright
 
 
-# ============================================================
-# CONFIGURATION
-# ============================================================
+BASE_URL = "http://localhost:5173"
 
-BASE_URL = "https://www.saucedemo.com"
+ROOT = Path(__file__).resolve().parents[2]
 
-USERNAME = "standard_user"
-PASSWORD = "secret_sauce"
+SCREENSHOTS = ROOT / "screenshots"
+OUTPUTS = ROOT / "outputs"
 
-SCREENSHOT_DIR = Path("backend/screenshots")
-HTML_DIR = Path("backend/outputs/html")
-
-
-# ============================================================
-# CREATE DIRECTORIES
-# ============================================================
-
-SCREENSHOT_DIR.mkdir(
-    parents=True,
-    exist_ok=True,
-)
-
-HTML_DIR.mkdir(
-    parents=True,
-    exist_ok=True,
-)
+DEVICES = {
+    "desktop": {
+        "width": 1920,
+        "height": 1080,
+    },
+    "tablet": {
+        "width": 768,
+        "height": 1024,
+    },
+    "mobile": {
+        "width": 375,
+        "height": 812,
+    },
+}
 
 
-# ============================================================
-# SAVE SCREENSHOT
-# ============================================================
-
-def save_screenshot(
+async def capture_page(
     page,
-    filename: str,
+    device,
+    name,
 ):
-    """
-    Save the current page screenshot.
-    """
+    screenshot_path = (
+        SCREENSHOTS
+        / device
+        / f"{name}.png"
+    )
 
-    path = SCREENSHOT_DIR / filename
+    html_path = (
+        OUTPUTS
+        / device
+        / f"{name}.html"
+    )
 
-    page.screenshot(
-        path=str(path),
+    screenshot_path.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    html_path.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    await page.screenshot(
+        path=str(
+            screenshot_path
+        ),
         full_page=True,
     )
 
-    return path
+    html = await page.content()
 
-
-# ============================================================
-# SAVE HTML
-# ============================================================
-
-def save_html(
-    page,
-    filename: str,
-):
-    """
-    Save the current page HTML.
-    """
-
-    path = HTML_DIR / filename
-
-    path.write_text(
-        page.content(),
+    html_path.write_text(
+        html,
         encoding="utf-8",
     )
 
-    return path
+    return {
+        "screenshot": str(
+            screenshot_path
+        ),
+        "html": str(
+            html_path
+        ),
+    }
 
 
-# ============================================================
-# GET PAGE DIMENSIONS
-# ============================================================
-
-def get_page_dimensions(page):
-    """
-    Get browser viewport and document dimensions.
-    """
-
-    return page.evaluate(
-        """
-        () => ({
-            viewport_width: window.innerWidth,
-            viewport_height: window.innerHeight,
-            document_width: document.documentElement.scrollWidth,
-            document_height: document.documentElement.scrollHeight
-        })
-        """
-    )
-
-
-# ============================================================
-# LOGIN
-# ============================================================
-
-def login(page):
-    """
-    Login to SauceDemo.
-    """
-
-    print("[NAVIGATION] Opening SauceDemo...")
-
-    page.goto(
-        BASE_URL,
-        wait_until="domcontentloaded",
-        timeout=30000,
-    )
-
-    print("[NAVIGATION] Filling username...")
-
-    page.locator(
-        "#user-name"
-    ).fill(USERNAME)
-
-    print("[NAVIGATION] Filling password...")
-
-    page.locator(
-        "#password"
-    ).fill(PASSWORD)
-
-    print("[NAVIGATION] Clicking login...")
-
-    page.locator(
-        "#login-button"
-    ).click()
-
-    page.wait_for_load_state(
-        "domcontentloaded"
-    )
-
-    # Confirm login
-    page.locator(
-        ".inventory_list"
-    ).wait_for(
-        state="visible",
-        timeout=10000,
-    )
-
-    print("[NAVIGATION] Login successful")
-
-
-# ============================================================
-# OPEN CHECKOUT
-# ============================================================
-
-def open_checkout(page):
-    """
-    Add a product and navigate to checkout.
-    """
-
-    print("[NAVIGATION] Adding product...")
-
-    page.locator(
-        ".inventory_item"
-    ).first.locator(
-        "button"
-    ).click()
-
-    print("[NAVIGATION] Product added")
-
-    # Go to cart
-    print("[NAVIGATION] Opening cart...")
-
-    page.locator(
-        ".shopping_cart_link"
-    ).click()
-
-    page.wait_for_load_state(
-        "domcontentloaded"
-    )
-
-    # Checkout
-    print("[NAVIGATION] Opening checkout...")
-
-    page.locator(
-        "#checkout"
-    ).click()
-
-    page.wait_for_load_state(
-        "domcontentloaded"
-    )
-
-    # Fill checkout form
-    print("[NAVIGATION] Filling checkout form...")
-
-    page.locator(
-        "#first-name"
-    ).fill("Omni")
-
-    page.locator(
-        "#last-name"
-    ).fill("Sight")
-
-    page.locator(
-        "#postal-code"
-    ).fill("682001")
-
-    print("[NAVIGATION] Clicking continue...")
-
-    page.locator(
-        "#continue"
-    ).click()
-
-    page.wait_for_load_state(
-        "domcontentloaded"
-    )
-
-    print("[NAVIGATION] Checkout opened")
-
-
-# ============================================================
-# RUN ONE DEVICE
-# ============================================================
-
-def run_week1_device(
-    browser,
-    device_name: str,
-    width: int,
-    height: int,
+async def run_browser(
+    device,
+    size,
 ):
-    """
-    Run the complete Week-1 navigation flow
-    for one viewport.
-    """
-
-    print()
-    print("=" * 60)
-    print(
-        f"[{device_name.upper()}] "
-        f"Starting {width}x{height}"
-    )
-    print("=" * 60)
-
-    context = browser.new_context(
-        viewport={
-            "width": width,
-            "height": height,
-        }
-    )
-
-    page = context.new_page()
-
-    try:
-
-        # ====================================================
-        # LOGIN
-        # ====================================================
-
-        login(page)
-
-        # ====================================================
-        # PRODUCTS
-        # ====================================================
-
-        print(
-            f"[{device_name}] Capturing products..."
-        )
-
-        products_screenshot = save_screenshot(
-            page,
-            f"{device_name}_products.png",
-        )
-
-        products_html = save_html(
-            page,
-            f"{device_name}_products.html",
-        )
-
-        print(
-            f"[{device_name}] Products captured"
-        )
-
-        # ====================================================
-        # ADD PRODUCT
-        # ====================================================
-
-        print(
-            f"[{device_name}] Adding product..."
-        )
-
-        page.locator(
-            ".inventory_item"
-        ).first.locator(
-            "button"
-        ).click()
-
-        print(
-            f"[{device_name}] Product added"
-        )
-
-        # ====================================================
-        # CART
-        # ====================================================
-
-        print(
-            f"[{device_name}] Opening cart..."
-        )
-
-        page.locator(
-            ".shopping_cart_link"
-        ).click()
-
-        page.wait_for_load_state(
-            "domcontentloaded"
-        )
-
-        cart_screenshot = save_screenshot(
-            page,
-            f"{device_name}_cart.png",
-        )
-
-        cart_html = save_html(
-            page,
-            f"{device_name}_cart.html",
-        )
-
-        print(
-            f"[{device_name}] Cart captured"
-        )
-
-        # ====================================================
-        # CHECKOUT
-        # ====================================================
-
-        print(
-            f"[{device_name}] Opening checkout..."
-        )
-
-        page.locator(
-            "#checkout"
-        ).click()
-
-        page.wait_for_load_state(
-            "domcontentloaded"
-        )
-
-        # Fill checkout
-        page.locator(
-            "#first-name"
-        ).fill("Omni")
-
-        page.locator(
-            "#last-name"
-        ).fill("Sight")
-
-        page.locator(
-            "#postal-code"
-        ).fill("682001")
-
-        # Continue
-        page.locator(
-            "#continue"
-        ).click()
-
-        page.wait_for_load_state(
-            "domcontentloaded"
-        )
-
-        checkout_screenshot = save_screenshot(
-            page,
-            f"{device_name}_checkout.png",
-        )
-
-        checkout_html = save_html(
-            page,
-            f"{device_name}_checkout.html",
-        )
-
-        print(
-            f"[{device_name}] Checkout captured"
-        )
-
-        # ====================================================
-        # DIMENSIONS
-        # ====================================================
-
-        dimensions = get_page_dimensions(
-            page
-        )
-
-        print(
-            f"[{device_name}] Dimensions: "
-            f"{dimensions}"
-        )
-
-        # ====================================================
-        # CONTINUE BUTTON
-        # ====================================================
-
-        continue_visible = page.locator(
-            "#continue"
-        ).is_visible()
-
-        print(
-            f"[{device_name}] "
-            f"Continue visible: "
-            f"{continue_visible}"
-        )
-
-        # ====================================================
-        # RESULT
-        # ====================================================
-
-        result = {
-            "status": "passed",
-
-            "viewport": {
-                "width": width,
-                "height": height,
-            },
-
-            "screenshots": {
-                "products": str(
-                    products_screenshot
-                ),
-                "cart": str(
-                    cart_screenshot
-                ),
-                "checkout": str(
-                    checkout_screenshot
-                ),
-            },
-
-            "html": {
-                "products": str(
-                    products_html
-                ),
-                "cart": str(
-                    cart_html
-                ),
-                "checkout": str(
-                    checkout_html
-                ),
-            },
-
-            "dimensions": dimensions,
-
-            "continue_visible": (
-                continue_visible
-            ),
-        }
-
-        print(
-            f"[{device_name}] "
-            f"Navigation PASSED"
-        )
-
-        return result
-
-    except Exception as error:
-
-        print(
-            f"[{device_name}] "
-            f"Navigation FAILED"
-        )
-
-        print(
-            f"[{device_name}] "
-            f"ERROR: {repr(error)}"
-        )
-
-        return {
-            "status": "failed",
-            "viewport": {
-                "width": width,
-                "height": height,
-            },
-            "error": repr(error),
-        }
-
-    finally:
-
-        context.close()
-
-        print(
-            f"[{device_name}] "
-            f"Browser context closed"
-        )
-
-
-# ============================================================
-# WEEK 1 NAVIGATION
-# ============================================================
-
-def run_week1():
-    """
-    Run OmniSight Week-1 navigation across
-    desktop, tablet and mobile.
-    """
-
-    print()
-    print("=" * 60)
-    print("[NAVIGATION] Starting Playwright")
-    print("=" * 60)
-
-    results = {}
-
-    # ========================================================
-    # START PLAYWRIGHT
-    # ========================================================
-
-    with sync_playwright() as p:
-
-        print(
-            "[NAVIGATION] Launching Chromium..."
-        )
-
-        browser = p.chromium.launch(
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(
             headless=True
         )
 
-        print(
-            "[NAVIGATION] Chromium launched"
+        context = await browser.new_context(
+            viewport=size
         )
 
+        page = await context.new_page()
+
+        await page.goto(
+            BASE_URL,
+            wait_until="networkidle",
+        )
+
+        home = await capture_page(
+            page,
+            device,
+            "home",
+        )
+
+        await page.click(
+            ".add-to-cart"
+        )
+
+        cart = await capture_page(
+            page,
+            device,
+            "cart",
+        )
+
+        await browser.close()
+
+        return {
+            "device": device,
+            "success": True,
+            "pages": {
+                "home": home,
+                "cart": cart,
+            },
+        }
+
+
+async def run_navigation():
+    results = {}
+
+    for device, size in DEVICES.items():
         try:
-
-            # =================================================
-            # DESKTOP
-            # =================================================
-
-            results["desktop"] = (
-                run_week1_device(
-                    browser,
-                    "desktop",
-                    1920,
-                    1080,
-                )
+            results[device] = await run_browser(
+                device,
+                size,
             )
 
-            # =================================================
-            # TABLET
-            # =================================================
+        except Exception as exc:
+            results[device] = {
+                "device": device,
+                "success": False,
+                "error": str(exc),
+            }
 
-            results["tablet"] = (
-                run_week1_device(
-                    browser,
-                    "tablet",
-                    768,
-                    1024,
-                )
-            )
-
-            # =================================================
-            # MOBILE
-            # =================================================
-
-            results["mobile"] = (
-                run_week1_device(
-                    browser,
-                    "mobile",
-                    375,
-                    812,
-                )
-            )
-
-        finally:
-
-            browser.close()
-
-            print(
-                "[NAVIGATION] Chromium closed"
-            )
-
-    # ========================================================
-    # FINAL RESULT
-    # ========================================================
-
-    print()
-    print("=" * 60)
-    print("[NAVIGATION] Navigation completed")
-    print("=" * 60)
-
-    return results
+    return {
+        "success": all(
+            item["success"]
+            for item in results.values()
+        ),
+        "devices": results,
+    }
 
 
-# ============================================================
-# FASTAPI-SAFE WRAPPER
-# ============================================================
+if __name__ == "__main__":
+    import asyncio
 
-def run_navigation_sync():
-    """
-    Entry point used by FastAPI.
-
-    Playwright runs through its synchronous API,
-    avoiding the Windows async subprocess issue.
-    """
-
-    print(
-        "\n[NAVIGATION] Starting sync Playwright..."
+    result = asyncio.run(
+        run_navigation()
     )
 
-    result = run_week1()
-
-    print(
-        "[NAVIGATION] Sync navigation completed"
-    )
-
-    return result
+    print(result)

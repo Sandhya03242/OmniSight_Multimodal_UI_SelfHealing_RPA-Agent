@@ -1,176 +1,120 @@
 import os
+from datetime import datetime
+from pathlib import Path
 
 from github import Github
-from dotenv import load_dotenv
 
 
-load_dotenv()
+GITHUB_TOKEN = os.getenv(
+    "GITHUB_TOKEN"
+)
+
+GITHUB_REPOSITORY = os.getenv(
+    "GITHUB_REPOSITORY"
+)
 
 
 def create_pull_request(
-    repository_name: str,
-    base_branch: str = "main",
+    file_path,
+    css_fix,
+    issue_description="OmniSight UI self-healing fix",
 ):
+    if not GITHUB_TOKEN:
+        raise ValueError(
+            "GITHUB_TOKEN environment variable is not set"
+        )
 
-    token = os.getenv(
-        "GITHUB_TOKEN"
-    )
-
-    if not token:
-
-        raise RuntimeError(
-            "GITHUB_TOKEN not configured."
+    if not GITHUB_REPOSITORY:
+        raise ValueError(
+            "GITHUB_REPOSITORY environment variable is not set"
         )
 
     github = Github(
-        token
+        GITHUB_TOKEN
     )
 
     repo = github.get_repo(
-        repository_name
+        GITHUB_REPOSITORY
     )
 
-    base = repo.get_branch(
-        base_branch
+    default_branch = (
+        repo.default_branch
     )
 
     branch_name = (
         "omnisight/"
-        "self-healing-fix"
+        + datetime.now().strftime(
+            "%Y%m%d%H%M%S"
+        )
     )
 
-    # --------------------------
-    # Create branch
-    # --------------------------
+    source_branch = repo.get_branch(
+        default_branch
+    )
+
+    repo.create_git_ref(
+        ref=f"refs/heads/{branch_name}",
+        sha=source_branch.commit.sha,
+    )
+
+    root = Path(
+        __file__
+    ).resolve().parents[2]
+
+    local_path = Path(
+        file_path
+    )
+
+    if not local_path.exists():
+        raise FileNotFoundError(
+            f"File not found: {file_path}"
+        )
 
     try:
-
-        repo.get_branch(
-            branch_name
+        repo_path = str(
+            local_path.relative_to(
+                root
+            )
         )
 
-    except Exception:
+    except ValueError:
+        repo_path = str(
+            local_path
+        )
 
-        repo.create_git_ref(ref=f"refs/heads/{branch_name}",sha=base.commit.sha,)
-
-    # --------------------------
-    # Generated fix
-    # --------------------------
-
-    css = """
-/*
-OmniSight Automated UI Fix
-
-Detected:
-Hidden checkout Continue button.
-
-Generated:
-Self-healing CSS repair.
-*/
-
-#continue {
-    display: block !important;
-    visibility: visible !important;
-    opacity: 1 !important;
-}
-"""
-
-    file_path = (
-        "backend/outputs/"
-        "fixes/omnisight_fix.css"
+    repo_path = repo_path.replace(
+        "\\",
+        "/",
     )
 
-    # --------------------------
-    # Commit
-    # --------------------------
-
-    try:
-
-        existing = repo.get_contents(
-            file_path,
-            ref=branch_name,
-        )
-
-        repo.update_file(
-
-            path=file_path,
-
-            message=(
-                "fix: OmniSight "
-                "self-healing UI repair"
-            ),
-
-            content=css,
-
-            sha=existing.sha,
-
-            branch=branch_name,
-        )
-
-    except Exception:
-
-        repo.create_file(
-
-            path=file_path,
-
-            message=(
-                "fix: OmniSight "
-                "self-healing UI repair"
-            ),
-
-            content=css,
-
-            branch=branch_name,
-        )
-
-    # --------------------------
-    # Pull request
-    # --------------------------
-
-    pr = repo.create_pull(
-
-        title=(
-            "🤖 OmniSight "
-            "Self-Healing UI Fix"
-        ),
-
-        body="""
-## OmniSight Automated UI Repair
-
-### Detection
-
-OmniSight detected a hidden checkout
-Continue button.
-
-### AI
-
-Qwen3.5-0.8B analyzed the screenshot
-and HTML.
-
-### Agent
-
-LangChain orchestrated the repair.
-
-### Browser
-
-Playwright applied the generated CSS
-and verified the result.
-
-### Result
-
-UI defect successfully resolved.
-""",
-
-        head=branch_name,
-
-        base=base_branch,
+    content = local_path.read_text(
+        encoding="utf-8"
     )
 
-    return {
+    remote_file = repo.get_contents(
+        repo_path,
+        ref=branch_name,
+    )
 
-        "branch":
-            branch_name,
+    repo.update_file(
+        path=remote_file.path,
+        message="fix: self-heal UI issue",
+        content=content,
+        sha=remote_file.sha,
+        branch=branch_name,
+    )
 
-        "pull_request":
-            pr.html_url,
-    }
+    pull_request = repo.create_pull(
+        title="fix: OmniSight self-healed UI issue",
+        body=f"""## OmniSight Self-Healing
+
+OmniSight automatically detected and healed a UI issue.
+
+### Issue
+
+{issue_description}
+
+### Generated CSS
+
+```css
+{css_fix}""")
