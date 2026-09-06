@@ -9,6 +9,7 @@ import torch
 from PIL import Image
 from transformers import AutoModelForMultimodalLM, AutoProcessor
 
+from backend.vision.image_chunker import optimize_screenshot
 from backend.vision.prompt import (
     HEALING_PROMPT,
     VERIFICATION_PROMPT,
@@ -26,22 +27,15 @@ MAX_HTML_LENGTH = 6000
 MAX_SOURCE_LENGTH = 10000
 MAX_NEW_TOKENS = 500
 
+ENABLE_IMAGE_OPTIMIZATION = True
+HTML_REDUCTION_ENABLED = True
+
 
 # ============================================================
 # VISION ANALYZER
 # ============================================================
 
 class VisionAnalyzer:
-    """
-    OmniSight multimodal UI analyzer.
-
-    Responsibilities:
-
-    1. Analyze screenshot + HTML
-    2. Detect UI issues
-    3. Generate candidate healing fixes
-    4. Verify the healed UI
-    """
 
     def __init__(
         self,
@@ -57,20 +51,33 @@ class VisionAnalyzer:
         print(f"Model: {model_id}")
         print("Device: CPU")
 
+        print("Loading processor...")
+
         self.processor = AutoProcessor.from_pretrained(
             model_id
         )
 
+        print("Loading multimodal model...")
+
         self.model = AutoModelForMultimodalLM.from_pretrained(
             model_id,
-            torch_dtype=torch.float32,
+            dtype=torch.float32,
             device_map="cpu",
         )
 
         self.model.eval()
 
         print("Vision model loaded successfully.")
-        print("=" * 60)
+
+        print(
+            f"[WEEK 4] Image optimization: "
+            f"{ENABLE_IMAGE_OPTIMIZATION}"
+        )
+
+        print(
+            f"[WEEK 4] HTML reduction: "
+            f"{HTML_REDUCTION_ENABLED}"
+        )
 
     # ========================================================
     # MODEL GENERATION
@@ -137,7 +144,177 @@ class VisionAnalyzer:
         return response
 
     # ========================================================
-    # WEEK 2
+    # IMAGE OPTIMIZATION
+    # ========================================================
+
+    def _prepare_image(
+        self,
+        screenshot_path: str | Path,
+    ) -> tuple[Image.Image, dict[str, Any]]:
+
+        screenshot_file = Path(
+            screenshot_path
+        )
+
+        if not screenshot_file.exists():
+
+            raise FileNotFoundError(
+                f"Screenshot not found: "
+                f"{screenshot_file}"
+            )
+
+        if ENABLE_IMAGE_OPTIMIZATION:
+
+            print("=" * 60)
+            print("WEEK 4 IMAGE OPTIMIZATION")
+            print("=" * 60)
+
+            optimization = optimize_screenshot(
+                screenshot_file
+            )
+
+            focused_path = Path(
+                optimization["focused"]["path"]
+            )
+
+            image = Image.open(
+                focused_path
+            ).convert("RGB")
+
+            print(
+                "[OPTIMIZATION] Original image: "
+                f"{optimization['original']['width']}x"
+                f"{optimization['original']['height']}"
+            )
+
+            print(
+                "[OPTIMIZATION] Focused image: "
+                f"{optimization['focused']['width']}x"
+                f"{optimization['focused']['height']}"
+            )
+
+            print(
+                "[OPTIMIZATION] Bounding box: "
+                f"{optimization.get('bbox')}"
+            )
+
+            print(
+                "[OPTIMIZATION] "
+                "Sending focused image to VLM"
+            )
+
+            return image, optimization
+
+        image = Image.open(
+            screenshot_file
+        ).convert("RGB")
+
+        return image, {
+            "status": "disabled",
+            "original": {
+                "path": str(screenshot_file),
+                "width": image.width,
+                "height": image.height,
+            },
+            "focused": {
+                "path": str(screenshot_file),
+                "width": image.width,
+                "height": image.height,
+            },
+        }
+
+    # ========================================================
+    # HTML REDUCTION
+    # ========================================================
+
+    def _reduce_html(
+        self,
+        html: str,
+        max_length: int = MAX_HTML_LENGTH,
+    ) -> tuple[str, dict[str, Any]]:
+
+        original_length = len(html)
+
+        if not HTML_REDUCTION_ENABLED:
+
+            reduced = html[:max_length]
+
+            return reduced, {
+                "enabled": False,
+                "original_length": original_length,
+                "reduced_length": len(reduced),
+            }
+
+        reduced = re.sub(
+            r"<script\b[^>]*>.*?</script>",
+            "",
+            html,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+
+        reduced = re.sub(
+            r"<style\b[^>]*>.*?</style>",
+            "",
+            reduced,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+
+        reduced = re.sub(
+            r"<!--.*?-->",
+            "",
+            reduced,
+            flags=re.DOTALL,
+        )
+
+        reduced = re.sub(
+            r"\s+",
+            " ",
+            reduced,
+        ).strip()
+
+        reduced = reduced[:max_length]
+
+        print(
+            "[OPTIMIZATION] HTML reduced: "
+            f"{original_length} → {len(reduced)} chars"
+        )
+
+        return reduced, {
+            "enabled": True,
+            "original_length": original_length,
+            "reduced_length": len(reduced),
+        }
+
+    # ========================================================
+    # LOAD HTML
+    # ========================================================
+
+    def _load_html(
+        self,
+        html_path: str | Path,
+    ) -> tuple[str, dict[str, Any]]:
+
+        html_file = Path(
+            html_path
+        )
+
+        if not html_file.exists():
+
+            raise FileNotFoundError(
+                f"HTML file not found: "
+                f"{html_file}"
+            )
+
+        html = html_file.read_text(
+            encoding="utf-8",
+            errors="ignore",
+        )
+
+        return self._reduce_html(
+            html
+        )
+
+    # ========================================================
     # UI ANALYSIS
     # ========================================================
 
@@ -156,12 +333,14 @@ class VisionAnalyzer:
         )
 
         if not screenshot_file.exists():
+
             raise FileNotFoundError(
                 f"Screenshot not found: "
                 f"{screenshot_file}"
             )
 
         if not html_file.exists():
+
             raise FileNotFoundError(
                 f"HTML file not found: "
                 f"{html_file}"
@@ -179,25 +358,37 @@ class VisionAnalyzer:
             f"HTML: {html_file}"
         )
 
-        image = Image.open(
+        image, optimization = self._prepare_image(
             screenshot_file
-        ).convert("RGB")
-
-        html = html_file.read_text(
-            encoding="utf-8",
-            errors="ignore",
         )
 
-        html = html[:MAX_HTML_LENGTH]
+        html, html_optimization = self._load_html(
+            html_file
+        )
 
         prompt = (
             VISION_PROMPT
-            + "\n\nRAW HTML:\n"
+            + "\n\nOPTIMIZATION CONTEXT:\n"
+            + (
+                "Analyze the focused screenshot together "
+                "with the reduced HTML. Identify only "
+                "real visual UI problems. "
+                "Do not report normal UI elements as issues."
+            )
+            + "\n\nREDUCED HTML:\n"
             + html
         )
 
+        print(
+            "[OPTIMIZATION] "
+            "Image + reduced HTML prepared."
+        )
+
         print("Preparing model input...")
-        print("Running Qwen3.5-0.8B inference...")
+
+        print(
+            "Running Qwen3.5-0.8B inference..."
+        )
 
         response = self._generate(
             image=image,
@@ -229,12 +420,15 @@ class VisionAnalyzer:
             "html": str(
                 html_file
             ),
+            "optimization": {
+                "image": optimization,
+                "html": html_optimization,
+            },
             "issues": issues,
             "raw_response": response,
         }
 
     # ========================================================
-    # WEEK 3
     # GENERATE HEALING FIX
     # ========================================================
 
@@ -250,14 +444,23 @@ class VisionAnalyzer:
         )
 
         if not screenshot_file.exists():
+
             raise FileNotFoundError(
                 f"Screenshot not found: "
                 f"{screenshot_file}"
             )
 
-        image = Image.open(
+        # Keep complete source for validation.
+        original_source_code = source_code
+
+        # Only limit source sent to VLM.
+        model_source_code = source_code[
+            :MAX_SOURCE_LENGTH
+        ]
+
+        image, optimization = self._prepare_image(
             screenshot_file
-        ).convert("RGB")
+        )
 
         issue_json = json.dumps(
             issue,
@@ -265,21 +468,57 @@ class VisionAnalyzer:
             ensure_ascii=False,
         )
 
-        source_code = source_code[
-            :MAX_SOURCE_LENGTH
-        ]
+        print("=" * 60)
+        print("GENERATING HEALING FIX")
+        print("=" * 60)
+
+        print(
+            f"[HEALING] Source length: "
+            f"{len(model_source_code)} chars"
+        )
 
         prompt = (
             HEALING_PROMPT
             + "\n\nDETECTED ISSUE:\n"
             + issue_json
-            + "\n\nSOURCE CODE:\n"
-            + source_code
+            + "\n\nACTUAL SOURCE CODE:\n"
+            + model_source_code
+            + "\n\nSTRICT SOURCE PATCH RULES:\n"
+            + "1. Return ONLY valid JSON.\n"
+            + "2. Return a 'fixes' array.\n"
+            + "3. 'old' MUST be exact source code copied "
+            + "from ACTUAL SOURCE CODE.\n"
+            + "4. 'new' MUST be actual replacement source code.\n"
+            + "5. 'old' and 'new' MUST be different.\n"
+            + "6. NEVER put the issue description into 'old'.\n"
+            + "7. NEVER put the issue description into 'new'.\n"
+            + "8. The old string MUST exist literally "
+            + "inside the source.\n"
+            + "9. Make the smallest possible source change.\n"
+            + "10. Prefer existing JSX/Tailwind className "
+            + "changes.\n"
+            + "11. Do not invent selectors or classes "
+            + "unless they are valid Tailwind classes.\n"
+            + "12. Do not return CSS explanations instead "
+            + "of source.\n"
+            + "13. Do not return markdown.\n"
+            + "14. If no exact safe patch can be created, "
+            + "return {\"fixes\":[]}.\n\n"
+            + "Required JSON format:\n"
+            + '{'
+            + '"fixes":['
+            + '{'
+            + '"old":"exact source code",'
+            + '"new":"replacement source code",'
+            + '"reason":"short reason"'
+            + '}'
+            + ']'
+            + '}'
         )
 
-        print("=" * 60)
-        print("GENERATING HEALING FIX")
-        print("=" * 60)
+        print(
+            "[VLM] Generating source patch..."
+        )
 
         response = self._generate(
             image=image,
@@ -292,25 +531,782 @@ class VisionAnalyzer:
 
         print(response)
 
-        result = self._parse_healing_response(
-            response
+        fixes = self._parse_source_fixes(
+            response=response,
+            source_code=original_source_code,
         )
 
         # ====================================================
-        # IMPORTANT
-        #
-        # This is only a CANDIDATE fix.
-        #
-        # graph.py must validate it before applying.
+        # DETERMINISTIC FALLBACK
         # ====================================================
 
-        result["candidate"] = True
+        if not fixes:
 
-        return result
+            print(
+                "[VLM] No valid exact source patch found."
+            )
+
+            print(
+                "[HEALING] Checking deterministic "
+                "source fallback..."
+            )
+
+            fixes = self._generate_fallback_fixes(
+                issue=issue,
+                source_code=original_source_code,
+            )
+
+        if fixes:
+
+            print(
+                f"[VLM] Number of fixes: "
+                f"{len(fixes)}"
+            )
+
+            for index, fix in enumerate(
+                fixes,
+                start=1,
+            ):
+
+                print(
+                    f"[VLM] Fix {index}:"
+                )
+
+                print(
+                    f"  OLD: {fix['old']}"
+                )
+
+                print(
+                    f"  NEW: {fix['new']}"
+                )
+
+            return {
+                "status": "success",
+                "fix_type": "source",
+                "element": issue.get(
+                    "element"
+                ),
+                "description": issue.get(
+                    "description",
+                    "",
+                ),
+                "code": None,
+                "fixes": fixes,
+                "candidate": True,
+                "raw_response": response,
+                "optimization": optimization,
+            }
+
+        print(
+            "[HEALING] No usable source fix."
+        )
+
+        return {
+            "status": "failed",
+            "fix_type": "source",
+            "element": issue.get(
+                "element"
+            ),
+            "description": issue.get(
+                "description",
+                "",
+            ),
+            "code": None,
+            "fixes": [],
+            "candidate": False,
+            "raw_response": response,
+            "optimization": optimization,
+        }
 
     # ========================================================
-    # WEEK 3
-    # VERIFY HEALING
+    # PARSE SOURCE FIXES
+    # ========================================================
+
+    def _parse_source_fixes(
+        self,
+        response: str,
+        source_code: str,
+    ) -> list[dict[str, str]]:
+
+        response = self._remove_code_fences(
+            response
+        )
+
+        data = self._extract_json_object(
+            response
+        )
+
+        if not isinstance(
+            data,
+            dict,
+        ):
+
+            return []
+
+        raw_fixes = data.get(
+            "fixes",
+            [],
+        )
+
+        if not isinstance(
+            raw_fixes,
+            list,
+        ):
+
+            return []
+
+        valid_fixes: list[dict[str, str]] = []
+
+        for index, item in enumerate(
+            raw_fixes,
+            start=1,
+        ):
+
+            if not isinstance(
+                item,
+                dict,
+            ):
+                continue
+
+            old = item.get(
+                "old"
+            )
+
+            new = item.get(
+                "new"
+            )
+
+            reason = item.get(
+                "reason",
+                "",
+            )
+
+            if not isinstance(
+                old,
+                str,
+            ):
+
+                print(
+                    f"[VLM] Fix {index} rejected: "
+                    "'old' is not source text."
+                )
+
+                continue
+
+            if not isinstance(
+                new,
+                str,
+            ):
+
+                print(
+                    f"[VLM] Fix {index} rejected: "
+                    "'new' is not source text."
+                )
+
+                continue
+
+            old = old.strip()
+            new = new.strip()
+
+            if not old or not new:
+
+                print(
+                    f"[VLM] Fix {index} rejected: "
+                    "empty old/new."
+                )
+
+                continue
+
+            if old == new:
+
+                print(
+                    f"[VLM] Fix {index} rejected: "
+                    "old and new are identical."
+                )
+
+                continue
+
+            # CRITICAL:
+            # old must actually exist in source.
+            if old not in source_code:
+
+                print(
+                    f"[VLM] Fix {index} rejected: "
+                    "old pattern not found in source."
+                )
+
+                continue
+
+            valid_fixes.append(
+                {
+                    "old": old,
+                    "new": new,
+                    "reason": str(
+                        reason
+                    ),
+                }
+            )
+
+        return valid_fixes
+
+    # ========================================================
+    # DETERMINISTIC FALLBACK
+    # ========================================================
+
+    def _generate_fallback_fixes(
+        self,
+        issue: dict[str, Any],
+        source_code: str,
+    ) -> list[dict[str, str]]:
+
+        issue_text = " ".join(
+            [
+                str(
+                    issue.get(
+                        "type",
+                        "",
+                    )
+                ),
+                str(
+                    issue.get(
+                        "description",
+                        "",
+                    )
+                ),
+                str(
+                    issue.get(
+                        "element",
+                        "",
+                    )
+                ),
+                str(
+                    issue.get(
+                        "suggested_fix",
+                        "",
+                    )
+                ),
+            ]
+        ).lower()
+
+        print(
+            "[FALLBACK] Issue context:"
+        )
+
+        print(
+            issue_text
+        )
+
+        is_overlap = any(
+            keyword in issue_text
+            for keyword in (
+                "overlap",
+                "overlapping",
+                "collide",
+                "collision",
+                "positioned directly",
+                "cover",
+                "covers",
+            )
+        )
+
+        is_product_issue = any(
+            keyword in issue_text
+            for keyword in (
+                "product",
+                "product card",
+                "add to cart",
+                "product title",
+                "product image",
+                "card",
+            )
+        )
+
+        # ====================================================
+        # 1. PRODUCT CARD STRUCTURAL FIX
+        #
+        # This MUST come before image-height fixes.
+        #
+        # For issues such as:
+        #
+        # "Smart Watch title overlaps product image"
+        #
+        # or:
+        #
+        # "Add to Cart button overlaps image"
+        #
+        # normal vertical flex flow is a safer deterministic
+        # fix than blindly changing image height.
+        # ====================================================
+
+        if is_overlap and is_product_issue:
+
+            product_card_patterns = [
+
+                (
+                    'className="bg-white rounded-xl shadow-md"',
+                    'className="bg-white rounded-xl shadow-md flex flex-col"',
+                    (
+                        "Convert the product card into a "
+                        "vertical flex container so the "
+                        "image, title, content and button "
+                        "remain in normal document flow."
+                    ),
+                ),
+
+                (
+                    'className="bg-white rounded-xl shadow-md overflow-hidden"',
+                    'className="bg-white rounded-xl shadow-md flex flex-col overflow-hidden"',
+                    (
+                        "Add a vertical flex layout to the "
+                        "existing product card while "
+                        "preserving overflow clipping."
+                    ),
+                ),
+
+                (
+                    'className="bg-white rounded-xl shadow-md overflow-hidden"',
+                    'className="bg-white rounded-xl shadow-md flex flex-col"',
+                    (
+                        "Add a vertical flex layout to "
+                        "prevent product elements from "
+                        "overlapping."
+                    ),
+                ),
+
+                (
+                    'className="bg-white rounded-lg shadow-md"',
+                    'className="bg-white rounded-lg shadow-md flex flex-col"',
+                    (
+                        "Use vertical flex layout for "
+                        "normal product-card content flow."
+                    ),
+                ),
+
+                (
+                    'className="bg-white rounded-lg shadow-lg"',
+                    'className="bg-white rounded-lg shadow-lg flex flex-col"',
+                    (
+                        "Use vertical flex layout to "
+                        "prevent card content overlap."
+                    ),
+                ),
+            ]
+
+            for old, new, reason in product_card_patterns:
+
+                if old in source_code:
+
+                    print(
+                        "[FALLBACK] Product card "
+                        "flex-column layout detected."
+                    )
+
+                    print(
+                        f"[FALLBACK] OLD: {old}"
+                    )
+
+                    print(
+                        f"[FALLBACK] NEW: {new}"
+                    )
+
+                    return [
+                        {
+                            "old": old,
+                            "new": new,
+                            "reason": reason,
+                        }
+                    ]
+
+        # ====================================================
+        # 2. RESPONSIVE GRID
+        # ====================================================
+
+        grid_fixes = [
+
+            (
+                'className="grid grid-cols-4 gap-0 w-[1200px]"',
+                (
+                    'className="grid grid-cols-1 '
+                    'sm:grid-cols-2 lg:grid-cols-4 '
+                    'gap-6 w-full"'
+                ),
+                (
+                    "Replace fixed-width product grid "
+                    "with a responsive Tailwind grid."
+                ),
+            ),
+
+            (
+                'className="grid grid-cols-4 gap-0"',
+                (
+                    'className="grid grid-cols-1 '
+                    'sm:grid-cols-2 lg:grid-cols-4 '
+                    'gap-6"'
+                ),
+                (
+                    "Make the product grid responsive "
+                    "across desktop and mobile."
+                ),
+            ),
+
+            (
+                'className="grid grid-cols-4 w-[1200px]"',
+                (
+                    'className="grid grid-cols-1 '
+                    'sm:grid-cols-2 lg:grid-cols-4 '
+                    'gap-6 w-full"'
+                ),
+                (
+                    "Remove the fixed-width layout and "
+                    "use responsive grid columns."
+                ),
+            ),
+
+            (
+                'className="grid grid-cols-3 gap-0"',
+                (
+                    'className="grid grid-cols-1 '
+                    'sm:grid-cols-2 lg:grid-cols-3 '
+                    'gap-6"'
+                ),
+                (
+                    "Make the three-column grid "
+                    "responsive."
+                ),
+            ),
+        ]
+
+        if any(
+            keyword in issue_text
+            for keyword in (
+                "responsive",
+                "mobile",
+                "tablet",
+                "grid",
+                "screen width",
+            )
+        ):
+
+            for old, new, reason in grid_fixes:
+
+                if old in source_code:
+
+                    print(
+                        "[FALLBACK] Responsive grid "
+                        "source pattern found."
+                    )
+
+                    return [
+                        {
+                            "old": old,
+                            "new": new,
+                            "reason": reason,
+                        }
+                    ]
+
+        # ====================================================
+        # 3. FIXED WIDTH
+        # ====================================================
+
+        fixed_width_fixes = [
+
+            (
+                "w-[1200px]",
+                "w-full",
+                (
+                    "Replace the fixed 1200px width "
+                    "with a responsive full-width layout."
+                ),
+            ),
+
+            (
+                "w-[1000px]",
+                "w-full",
+                (
+                    "Replace the fixed 1000px width "
+                    "with a responsive full-width layout."
+                ),
+            ),
+
+            (
+                "w-[900px]",
+                "w-full",
+                (
+                    "Replace the fixed 900px width "
+                    "with a responsive full-width layout."
+                ),
+            ),
+
+            (
+                "w-[700px]",
+                "w-full max-w-[700px]",
+                (
+                    "Keep the maximum width while "
+                    "allowing responsive shrinking."
+                ),
+            ),
+
+            (
+                "w-[600px]",
+                "w-full max-w-[600px]",
+                (
+                    "Keep the maximum width while "
+                    "allowing responsive shrinking."
+                ),
+            ),
+        ]
+
+        if any(
+            keyword in issue_text
+            for keyword in (
+                "fixed width",
+                "too wide",
+                "screen overflow",
+                "horizontal overflow",
+            )
+        ):
+
+            for old, new, reason in fixed_width_fixes:
+
+                if old in source_code:
+
+                    print(
+                        "[FALLBACK] Fixed-width "
+                        "source pattern found."
+                    )
+
+                    return [
+                        {
+                            "old": old,
+                            "new": new,
+                            "reason": reason,
+                        }
+                    ]
+
+        # ====================================================
+        # 4. PRODUCT IMAGE HEIGHT
+        # ====================================================
+
+        image_fixes = [
+
+            (
+                'className="w-full h-14 object-cover"',
+                'className="w-full h-48 object-cover"',
+            ),
+
+            (
+                'className="w-full h-16 object-cover"',
+                'className="w-full h-48 object-cover"',
+            ),
+
+            (
+                'className="w-full h-20 object-cover"',
+                'className="w-full h-48 object-cover"',
+            ),
+
+            (
+                'className="w-full h-24 object-cover"',
+                'className="w-full h-48 object-cover"',
+            ),
+
+            (
+                'className="h-14 w-full object-cover"',
+                'className="h-48 w-full object-cover"',
+            ),
+
+            (
+                'className="h-16 w-full object-cover"',
+                'className="h-48 w-full object-cover"',
+            ),
+
+            (
+                'className="h-20 w-full object-cover"',
+                'className="h-48 w-full object-cover"',
+            ),
+        ]
+
+        if any(
+            keyword in issue_text
+            for keyword in (
+                "image",
+                "photo",
+                "picture",
+                "image height",
+                "image size",
+            )
+        ):
+
+            for old, new in image_fixes:
+
+                if old in source_code:
+
+                    print(
+                        "[FALLBACK] Product image "
+                        "source pattern found."
+                    )
+
+                    return [
+                        {
+                            "old": old,
+                            "new": new,
+                            "reason": (
+                                "Increase the product image "
+                                "height to provide enough "
+                                "space for surrounding content."
+                            ),
+                        }
+                    ]
+
+        # ====================================================
+        # 5. GENERIC HEIGHT FIX
+        # ====================================================
+
+        height_fixes = [
+
+            (
+                "h-[56px]",
+                "h-48",
+            ),
+
+            (
+                "h-[60px]",
+                "h-48",
+            ),
+
+            (
+                "h-14",
+                "h-48",
+            ),
+
+            (
+                "h-16",
+                "h-48",
+            ),
+
+        ]
+
+        if any(
+            keyword in issue_text
+            for keyword in (
+                "height",
+                "too small",
+                "overlap",
+            )
+        ):
+
+            for old, new in height_fixes:
+
+                if old in source_code:
+
+                    print(
+                        "[FALLBACK] Generic height "
+                        "source pattern found."
+                    )
+
+                    return [
+                        {
+                            "old": old,
+                            "new": new,
+                            "reason": (
+                                "Increase the constrained "
+                                "element height to reduce "
+                                "visual collision."
+                            ),
+                        }
+                    ]
+
+        # ====================================================
+        # 6. OVERFLOW
+        # ====================================================
+
+        if any(
+            keyword in issue_text
+            for keyword in (
+                "clipped",
+                "cut off",
+                "hidden",
+                "overflow",
+            )
+        ):
+
+            if "overflow-hidden" in source_code:
+
+                print(
+                    "[FALLBACK] Overflow source "
+                    "pattern found."
+                )
+
+                return [
+                    {
+                        "old": "overflow-hidden",
+                        "new": "overflow-visible",
+                        "reason": (
+                            "Allow the affected content "
+                            "to remain visible instead "
+                            "of being clipped."
+                        ),
+                    }
+                ]
+
+        # ====================================================
+        # 7. BUTTON SPACING
+        # ====================================================
+
+        if any(
+            keyword in issue_text
+            for keyword in (
+                "button",
+                "add to cart",
+            )
+        ):
+
+            button_spacing = [
+
+                (
+                    "mt-0",
+                    "mt-4",
+                ),
+
+                (
+                    "mt-1",
+                    "mt-4",
+                ),
+
+                (
+                    "mt-2",
+                    "mt-4",
+                ),
+            ]
+
+            for old, new in button_spacing:
+
+                if old in source_code:
+
+                    print(
+                        "[FALLBACK] Button spacing "
+                        "source pattern found."
+                    )
+
+                    return [
+                        {
+                            "old": old,
+                            "new": new,
+                            "reason": (
+                                "Increase spacing above "
+                                "the button to separate "
+                                "it from surrounding content."
+                            ),
+                        }
+                    ]
+
+        print(
+            "[FALLBACK] No safe source fix found."
+        )
+
+        return []
+
+    # ========================================================
+    # VERIFY FIX
     # ========================================================
 
     def verify_fix(
@@ -329,27 +1325,26 @@ class VisionAnalyzer:
         )
 
         if not screenshot_file.exists():
+
             raise FileNotFoundError(
                 f"Screenshot not found: "
                 f"{screenshot_file}"
             )
 
         if not html_file.exists():
+
             raise FileNotFoundError(
                 f"HTML file not found: "
                 f"{html_file}"
             )
 
-        image = Image.open(
+        image, optimization = self._prepare_image(
             screenshot_file
-        ).convert("RGB")
-
-        html = html_file.read_text(
-            encoding="utf-8",
-            errors="ignore",
         )
 
-        html = html[:MAX_HTML_LENGTH]
+        html, html_optimization = self._load_html(
+            html_file
+        )
 
         issue_json = json.dumps(
             original_issue,
@@ -361,8 +1356,24 @@ class VisionAnalyzer:
             VERIFICATION_PROMPT
             + "\n\nORIGINAL ISSUE:\n"
             + issue_json
-            + "\n\nNEW HTML:\n"
+            + "\n\nREDUCED NEW HTML:\n"
             + html
+            + "\n\nSTRICT VERIFICATION RULES:\n"
+            + "1. Compare the current screenshot "
+            + "against the original issue.\n"
+            + "2. Do not mark fixed merely because "
+            + "HTML changed.\n"
+            + "3. Inspect the actual visual layout.\n"
+            + "4. If the original overlap is still visible, "
+            + "return fixed=false.\n"
+            + "5. Return fixed=true only when the original "
+            + "visual problem is actually resolved.\n"
+            + "6. Return ONLY valid JSON.\n"
+            + "\nRequired format:\n"
+            + '{'
+            + '"fixed":true,'
+            + '"reason":"short explanation"'
+            + '}'
         )
 
         print("=" * 60)
@@ -384,7 +1395,29 @@ class VisionAnalyzer:
             response
         )
 
+        result["optimization"] = {
+            "image": optimization,
+            "html": html_optimization,
+        }
+
         return result
+
+    # ========================================================
+    # VERIFY HEALING
+    # ========================================================
+
+    def verify_healing(
+        self,
+        screenshot_path: str,
+        html_path: str,
+        original_issue: dict[str, Any],
+    ) -> dict[str, Any]:
+
+        return self.verify_fix(
+            screenshot_path=screenshot_path,
+            html_path=html_path,
+            original_issue=original_issue,
+        )
 
     # ========================================================
     # PARSE UI RESPONSE
@@ -404,17 +1437,16 @@ class VisionAnalyzer:
             response
         )
 
-        # ----------------------------------------------------
-        # Direct JSON
-        # ----------------------------------------------------
-
         try:
 
             data = json.loads(
                 response
             )
 
-            if isinstance(data, dict):
+            if isinstance(
+                data,
+                dict,
+            ):
 
                 issues = data.get(
                     "issues",
@@ -425,6 +1457,7 @@ class VisionAnalyzer:
                     issues,
                     list,
                 ):
+
                     return self._clean_issues(
                         issues
                     )
@@ -433,6 +1466,7 @@ class VisionAnalyzer:
                 data,
                 list,
             ):
+
                 return self._clean_issues(
                     data
                 )
@@ -440,81 +1474,28 @@ class VisionAnalyzer:
         except json.JSONDecodeError:
             pass
 
-        # ----------------------------------------------------
-        # Embedded JSON object
-        # ----------------------------------------------------
+        data = self._extract_json_object(
+            response
+        )
 
-        object_start = response.find("{")
-        object_end = response.rfind("}")
-
-        if (
-            object_start != -1
-            and object_end != -1
-            and object_end > object_start
+        if isinstance(
+            data,
+            dict,
         ):
 
-            try:
+            issues = data.get(
+                "issues",
+                [],
+            )
 
-                data = json.loads(
-                    response[
-                        object_start:
-                        object_end + 1
-                    ]
+            if isinstance(
+                issues,
+                list,
+            ):
+
+                return self._clean_issues(
+                    issues
                 )
-
-                if isinstance(
-                    data,
-                    dict,
-                ):
-
-                    issues = data.get(
-                        "issues",
-                        [],
-                    )
-
-                    if isinstance(
-                        issues,
-                        list,
-                    ):
-                        return self._clean_issues(
-                            issues
-                        )
-
-            except json.JSONDecodeError:
-                pass
-
-        # ----------------------------------------------------
-        # Embedded JSON array
-        # ----------------------------------------------------
-
-        array_start = response.find("[")
-        array_end = response.rfind("]")
-
-        if (
-            array_start != -1
-            and array_end != -1
-            and array_end > array_start
-        ):
-
-            try:
-
-                data = json.loads(
-                    response[
-                        array_start:
-                        array_end + 1
-                    ]
-                )
-
-                if isinstance(
-                    data,
-                    list,
-                ):
-                    return self._clean_issues(
-                        data
-                    )
-
-            except json.JSONDecodeError:
-                pass
 
         return []
 
@@ -538,6 +1519,7 @@ class VisionAnalyzer:
                 issue,
                 dict,
             ):
+
                 continue
 
             description = str(
@@ -550,6 +1532,21 @@ class VisionAnalyzer:
             if not description:
                 continue
 
+            severity = str(
+                issue.get(
+                    "severity",
+                    "medium",
+                )
+            ).lower()
+
+            if severity not in (
+                "low",
+                "medium",
+                "high",
+                "critical",
+            ):
+                severity = "medium"
+
             cleaned.append(
                 {
                     "id": str(
@@ -561,15 +1558,10 @@ class VisionAnalyzer:
                     "type": str(
                         issue.get(
                             "type",
-                            "unknown",
+                            "visual issue",
                         )
                     ),
-                    "severity": str(
-                        issue.get(
-                            "severity",
-                            "low",
-                        )
-                    ),
+                    "severity": severity,
                     "description": description,
                     "element": issue.get(
                         "element"
@@ -581,67 +1573,6 @@ class VisionAnalyzer:
             )
 
         return cleaned
-
-    # ========================================================
-    # PARSE HEALING RESPONSE
-    # ========================================================
-
-    def _parse_healing_response(
-        self,
-        response: str,
-    ) -> dict[str, Any]:
-
-        response = self._remove_code_fences(
-            response
-        )
-
-        data = self._extract_json_object(
-            response
-        )
-
-        if not isinstance(
-            data,
-            dict,
-        ):
-
-            return {
-                "status": "failed",
-                "fix_type": "unknown",
-                "element": None,
-                "description": "",
-                "code": None,
-                "candidate": False,
-                "raw_response": response,
-            }
-
-        code = data.get(
-            "code"
-        )
-
-        if code is not None:
-            code = str(code).strip()
-
-        return {
-            "status": "success",
-            "fix_type": str(
-                data.get(
-                    "fix_type",
-                    "css",
-                )
-            ),
-            "element": data.get(
-                "element"
-            ),
-            "description": str(
-                data.get(
-                    "description",
-                    "",
-                )
-            ),
-            "code": code,
-            "candidate": True,
-            "raw_response": response,
-        }
 
     # ========================================================
     # PARSE VERIFICATION RESPONSE
@@ -669,28 +1600,24 @@ class VisionAnalyzer:
                 "status": "failed",
                 "fixed": False,
                 "reason": (
-                    "VLM verification response "
-                    "could not be parsed."
+                    "Could not parse "
+                    "verification response."
                 ),
                 "raw_response": response,
             }
 
-        fixed_value = data.get(
+        fixed = data.get(
             "fixed",
             False,
         )
 
-        # ----------------------------------------------------
-        # Normalize boolean
-        # ----------------------------------------------------
-
         if isinstance(
-            fixed_value,
+            fixed,
             str,
         ):
 
-            fixed_value = (
-                fixed_value.lower()
+            fixed = (
+                fixed.lower().strip()
                 in {
                     "true",
                     "yes",
@@ -701,13 +1628,13 @@ class VisionAnalyzer:
 
         else:
 
-            fixed_value = bool(
-                fixed_value
+            fixed = bool(
+                fixed
             )
 
         return {
             "status": "success",
-            "fixed": fixed_value,
+            "fixed": fixed,
             "reason": str(
                 data.get(
                     "reason",
@@ -718,13 +1645,18 @@ class VisionAnalyzer:
         }
 
     # ========================================================
-    # EXTRACT JSON OBJECT
+    # JSON EXTRACTION
     # ========================================================
 
     def _extract_json_object(
         self,
         response: str,
     ) -> dict[str, Any] | None:
+
+        response = response.strip()
+
+        if not response:
+            return None
 
         try:
 
@@ -736,43 +1668,82 @@ class VisionAnalyzer:
                 data,
                 dict,
             ):
+
                 return data
 
         except json.JSONDecodeError:
             pass
 
-        start = response.find("{")
-        end = response.rfind("}")
+        start = response.find(
+            "{"
+        )
 
-        if (
-            start == -1
-            or end == -1
-            or end <= start
+        if start == -1:
+            return None
+
+        depth = 0
+        in_string = False
+        escaped = False
+
+        for index in range(
+            start,
+            len(response),
         ):
-            return None
 
-        try:
+            char = response[index]
 
-            data = json.loads(
-                response[
-                    start:
-                    end + 1
-                ]
-            )
+            if escaped:
 
-            if isinstance(
-                data,
-                dict,
-            ):
-                return data
+                escaped = False
+                continue
 
-        except json.JSONDecodeError:
-            return None
+            if char == "\\":
+
+                escaped = True
+                continue
+
+            if char == '"':
+
+                in_string = not in_string
+                continue
+
+            if in_string:
+                continue
+
+            if char == "{":
+
+                depth += 1
+
+            elif char == "}":
+
+                depth -= 1
+
+                if depth == 0:
+
+                    candidate = response[
+                        start:index + 1
+                    ]
+
+                    try:
+
+                        data = json.loads(
+                            candidate
+                        )
+
+                        if isinstance(
+                            data,
+                            dict,
+                        ):
+
+                            return data
+
+                    except json.JSONDecodeError:
+                        return None
 
         return None
 
     # ========================================================
-    # REMOVE MARKDOWN FENCES
+    # REMOVE CODE FENCES
     # ========================================================
 
     def _remove_code_fences(
@@ -818,7 +1789,7 @@ def get_analyzer() -> VisionAnalyzer:
 
 
 # ============================================================
-# WEEK 2 API
+# PUBLIC API
 # ============================================================
 
 def analyze_ui(
@@ -831,10 +1802,6 @@ def analyze_ui(
         html_path=html_path,
     )
 
-
-# ============================================================
-# WEEK 3 API
-# ============================================================
 
 def generate_healing_fix(
     screenshot_path: str,
@@ -863,7 +1830,7 @@ def verify_healing(
 
 
 # ============================================================
-# LOCAL TEST
+# DIRECT TEST
 # ============================================================
 
 if __name__ == "__main__":

@@ -4,5 +4,3 @@ __pycache__/
 *.bak
 node_modules/
 demo-store/dist/
-screenshots/
-outputs/

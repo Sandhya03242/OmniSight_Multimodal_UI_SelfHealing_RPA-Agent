@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import re
 from pathlib import Path
 from typing import Any, TypedDict
 
@@ -9,6 +8,11 @@ from langgraph.graph import END, StateGraph
 
 from backend.browser.navigator import run_healing_test
 from backend.github.integration import publish_healing_fix
+from backend.vision.analyzer import (
+    analyze_ui,
+    generate_healing_fix,
+    verify_healing,
+)
 
 
 # ============================================================
@@ -16,24 +20,36 @@ from backend.github.integration import publish_healing_fix
 # ============================================================
 
 BASE_URL = "http://localhost:5173"
+
 APP_FILE = Path("demo-store/src/App.jsx")
 
 MAX_ATTEMPTS = 2
 
 
 # ============================================================
-# GRAPH STATE
+# LANGGRAPH STATE
 # ============================================================
 
 class HealingState(TypedDict, total=False):
     url: str
+
     attempt: int
     max_attempts: int
 
-    screenshots: list[str]
+    # Playwright returns screenshot dictionaries:
+    #
+    # {
+    #     "name": "...",
+    #     "screenshot": "...png",
+    #     "html": "...html",
+    #     "viewport": {...}
+    # }
+    #
+    screenshots: list[dict[str, Any]]
     html_files: list[str]
 
     analysis: dict[str, Any]
+    issues: list[dict[str, Any]]
     fixes: list[dict[str, Any]]
 
     applied: bool
@@ -41,6 +57,7 @@ class HealingState(TypedDict, total=False):
     fixed: bool
 
     verification: dict[str, Any]
+
     github_result: dict[str, Any]
 
     status: str
@@ -51,140 +68,416 @@ class HealingState(TypedDict, total=False):
 # HELPERS
 # ============================================================
 
-OLD_GRID = 'className="grid grid-cols-4 gap-0 w-[1200px]"'
+def get_screenshot_path(
+    screenshot_data: Any,
+) -> str:
+    """
+    Convert a Playwright screenshot entry into a string path.
+    """
 
-NEW_GRID = (
-    'className="grid grid-cols-1 sm:grid-cols-2 '
-    'lg:grid-cols-4 gap-6 w-full"'
-)
+    if isinstance(screenshot_data, dict):
+        path = screenshot_data.get("screenshot")
+
+        if not path:
+            raise ValueError(
+                "Screenshot dictionary does not contain "
+                "'screenshot' path."
+            )
+
+        return str(path)
+
+    if isinstance(screenshot_data, (str, Path)):
+        return str(screenshot_data)
+
+    raise TypeError(
+        "Screenshot must be a path string or dictionary, "
+        f"got {type(screenshot_data).__name__}."
+    )
 
 
-def read_app_file() -> str:
-    if not APP_FILE.exists():
-        raise FileNotFoundError(
-            f"Application source not found: {APP_FILE}"
-        )
+def get_html_path(
+    screenshot_data: Any,
+    html_files: list[str],
+) -> str:
+    """
+    Get the HTML path associated with a screenshot.
 
-    return APP_FILE.read_text(encoding="utf-8")
+    Prefer the HTML path stored inside the screenshot
+    dictionary. Fall back to html_files.
+    """
+
+    if isinstance(screenshot_data, dict):
+
+        html_path = screenshot_data.get("html")
+
+        if html_path:
+            return str(html_path)
+
+    if html_files:
+        return str(html_files[0])
+
+    raise ValueError(
+        "No HTML file available."
+    )
 
 
 # ============================================================
-# NODE 1 - CAPTURE
+# CAPTURE NODE
 # ============================================================
 
-async def capture_node(state: HealingState) -> HealingState:
-    print("\n" + "=" * 60)
-    print("[HEALING] CAPTURE")
-    print("=" * 60)
+async def capture_node(
+    state: HealingState,
+) -> HealingState:
 
-    url = state.get("url", BASE_URL)
+    print("\n" + "=" * 70)
+    print("[GRAPH] CAPTURE")
+    print("=" * 70)
+
+    url = state["url"]
 
     try:
+
         result = await run_healing_test(url)
+
+        if not isinstance(result, dict):
+            raise RuntimeError(
+                "Playwright returned an invalid result."
+            )
+
+        screenshots = result.get(
+            "screenshots",
+            [],
+        )
+
+        html_files = result.get(
+            "html_files",
+            [],
+        )
+
+        if not screenshots:
+            raise RuntimeError(
+                "Playwright did not produce any screenshots."
+            )
+
+        if not html_files:
+            raise RuntimeError(
+                "Playwright did not produce any HTML files."
+            )
+
+        print(
+            f"[PLAYWRIGHT] Screenshots: "
+            f"{len(screenshots)}"
+        )
+
+        print(
+            f"[PLAYWRIGHT] HTML files: "
+            f"{len(html_files)}"
+        )
 
         return {
             **state,
-            "url": url,
-            "screenshots": result.get("screenshots", []),
-            "html_files": result.get("html_files", []),
+            "screenshots": screenshots,
+            "html_files": [
+                str(path)
+                for path in html_files
+            ],
             "status": "captured",
             "error": "",
+            "retest_failed": False,
         }
 
     except Exception as exc:
-        error = str(exc)
 
-        print(f"[HEALING] Capture failed: {error}")
+        print(
+            f"[CAPTURE ERROR] {exc}"
+        )
 
         return {
             **state,
-            "status": "failed",
-            "error": error,
-            "retest_failed": True,
+            "status": "error",
+            "error": str(exc),
         }
 
 
 # ============================================================
-# NODE 2 - ANALYZE
+# ANALYZE NODE
 # ============================================================
 
-async def analyze_node(state: HealingState) -> HealingState:
-    print("\n" + "=" * 60)
-    print("[HEALING] ANALYZING UI")
-    print("=" * 60)
+async def analyze_node(
+    state: HealingState,
+) -> HealingState:
+
+    print("\n" + "=" * 70)
+    print("[GRAPH] WEEK 4 VLM ANALYSIS")
+    print("=" * 70)
+
+    screenshots = state.get(
+        "screenshots",
+        [],
+    )
+
+    html_files = state.get(
+        "html_files",
+        [],
+    )
+
+    if not screenshots:
+
+        return {
+            **state,
+            "status": "error",
+            "error": (
+                "No screenshots available for analysis."
+            ),
+        }
 
     try:
-        source = read_app_file()
 
         # ----------------------------------------------------
-        # Week 3 deterministic fallback analysis.
-        #
-        # This works with the known deliberate demo-store bug.
-        # Your Week 2 Vision Analyzer can be connected here later
-        # without changing the rest of the graph.
+        # IMPORTANT FIX
+        # ----------------------------------------------------
+        # Playwright returns a dictionary.
+        # Extract the actual screenshot path.
         # ----------------------------------------------------
 
-        bug_found = OLD_GRID in source
+        screenshot_data = screenshots[0]
 
-        if bug_found:
-            analysis = {
+        screenshot = get_screenshot_path(
+            screenshot_data
+        )
+
+        html = get_html_path(
+            screenshot_data,
+            html_files,
+        )
+
+        print(
+            f"[GRAPH] Screenshot: {screenshot}"
+        )
+
+        print(
+            f"[GRAPH] HTML: {html}"
+        )
+
+        # ----------------------------------------------------
+        # VLM ANALYSIS
+        # ----------------------------------------------------
+
+        analysis = await asyncio.to_thread(
+            analyze_ui,
+            screenshot,
+            html,
+        )
+
+        if not isinstance(analysis, dict):
+
+            raise RuntimeError(
+                "VLM analyzer returned an invalid result."
+            )
+
+        issues = analysis.get(
+            "issues",
+            [],
+        )
+
+        if not isinstance(
+            issues,
+            list,
+        ):
+
+            issues = []
+
+        # ----------------------------------------------------
+        # NORMALIZE ISSUES
+        # ----------------------------------------------------
+
+        dashboard_issues: list[
+            dict[str, Any]
+        ] = []
+
+        for index, issue in enumerate(
+            issues,
+            start=1,
+        ):
+
+            if isinstance(
+                issue,
+                dict,
+            ):
+
+                normalized_issue = dict(
+                    issue
+                )
+
+            else:
+
+                normalized_issue = {
+                    "description": str(issue)
+                }
+
+            normalized_issue.setdefault(
+                "id",
+                str(index),
+            )
+
+            normalized_issue.setdefault(
+                "status",
+                "pending",
+            )
+
+            normalized_issue.setdefault(
+                "screenshot",
+                screenshot,
+            )
+
+            dashboard_issues.append(
+                normalized_issue
+            )
+
+        # ----------------------------------------------------
+        # OPTIMIZATION INFORMATION
+        # ----------------------------------------------------
+
+        optimization = analysis.get(
+            "optimization",
+            {},
+        )
+
+        if not isinstance(
+            optimization,
+            dict,
+        ):
+
+            optimization = {}
+
+        image_stats = optimization.get(
+            "image",
+            {},
+        )
+
+        html_stats = optimization.get(
+            "html",
+            {},
+        )
+
+        print(
+            "[WEEK 4] Image optimization:",
+            image_stats,
+        )
+
+        print(
+            "[WEEK 4] HTML reduction:",
+            html_stats,
+        )
+
+        print(
+            f"[VLM] Detected issues: "
+            f"{len(dashboard_issues)}"
+        )
+
+        # ----------------------------------------------------
+        # ISSUE FOUND
+        # ----------------------------------------------------
+
+        if dashboard_issues:
+
+            print(
+                "[VLM] UI issue detected."
+            )
+
+            analysis["status"] = (
+                "issue_found"
+            )
+
+            analysis["issues"] = (
+                dashboard_issues
+            )
+
+            return {
+                **state,
+                "analysis": analysis,
+                "issues": dashboard_issues,
                 "status": "issue_found",
-                "issue": "Non-responsive product grid",
-                "severity": "high",
-                "source": str(APP_FILE),
-                "description": (
-                    "The product grid uses fixed four-column layout, "
-                    "zero gap, and fixed 1200px width."
-                ),
+                "fixed": False,
+                "error": "",
             }
 
-            print("[HEALING] UI defect detected.")
+        # ----------------------------------------------------
+        # NO ISSUE
+        # ----------------------------------------------------
 
-        else:
-            analysis = {
-                "status": "no_issue",
-                "issue": None,
-                "severity": "none",
-                "source": str(APP_FILE),
-                "description": (
-                    "The known responsive grid defect is not present."
-                ),
-            }
+        print(
+            "[VLM] No UI issue detected."
+        )
 
-            print("[HEALING] No known UI defect detected.")
+        analysis["status"] = (
+            "no_issue"
+        )
+
+        analysis["issues"] = []
 
         return {
             **state,
             "analysis": analysis,
-            "status": "analyzed",
+            "issues": [],
+            "fixed": True,
+            "status": "no_issue",
             "error": "",
         }
 
     except Exception as exc:
-        error = str(exc)
 
-        print(f"[HEALING] Analysis failed: {error}")
+        print(
+            f"[ANALYSIS ERROR] {exc}"
+        )
 
         return {
             **state,
-            "status": "failed",
-            "error": error,
+            "status": "error",
+            "error": str(exc),
         }
 
 
 # ============================================================
-# NODE 3 - EXTRACT FIX
+# EXTRACT FIX NODE
 # ============================================================
 
-async def extract_fix_node(state: HealingState) -> HealingState:
-    print("\n" + "=" * 60)
-    print("[HEALING] EXTRACTING FIX")
-    print("=" * 60)
+async def extract_fix_node(
+    state: HealingState,
+) -> HealingState:
 
-    analysis = state.get("analysis", {})
+    print("\n" + "=" * 70)
+    print("[GRAPH] EXTRACT HEALING FIX")
+    print("=" * 70)
 
-    if analysis.get("status") != "issue_found":
-        print("[HEALING] No fix required.")
+    analysis = state.get(
+        "analysis",
+        {},
+    )
+
+    issues = state.get(
+        "issues",
+        [],
+    )
+
+    if not issues:
+
+        issues = analysis.get(
+            "issues",
+            [],
+        )
+
+    screenshots = state.get(
+        "screenshots",
+        [],
+    )
+
+    html_files = state.get(
+        "html_files",
+        [],
+    )
+
+    if not issues:
 
         return {
             **state,
@@ -192,281 +485,821 @@ async def extract_fix_node(state: HealingState) -> HealingState:
             "status": "no_fix_required",
         }
 
-    fix = {
-        "file": str(APP_FILE),
-        "old": OLD_GRID,
-        "new": NEW_GRID,
-        "reason": (
-            "Replace fixed-width four-column grid with "
-            "responsive Tailwind CSS grid."
-        ),
-    }
+    if not screenshots:
 
-    print("[HEALING] Deterministic responsive CSS fix selected.")
+        return {
+            **state,
+            "status": "error",
+            "error": (
+                "No screenshot available "
+                "for fix generation."
+            ),
+        }
+
+    try:
+
+        screenshot = get_screenshot_path(
+            screenshots[0]
+        )
+
+        html_path = get_html_path(
+            screenshots[0],
+            html_files,
+        )
+
+    except Exception as exc:
+
+        return {
+            **state,
+            "status": "error",
+            "error": str(exc),
+        }
+
+    # --------------------------------------------------------
+    # READ SOURCE
+    # --------------------------------------------------------
+
+    if not APP_FILE.exists():
+
+        return {
+            **state,
+            "status": "error",
+            "error": (
+                f"Source file not found: "
+                f"{APP_FILE}"
+            ),
+        }
+
+    source_code = APP_FILE.read_text(
+        encoding="utf-8",
+    )
+
+    if not source_code.strip():
+
+        return {
+            **state,
+            "status": "error",
+            "error": (
+                "Source file is empty."
+            ),
+        }
+
+    print(
+        f"[SOURCE] Reading: {APP_FILE}"
+    )
+
+    print(
+        f"[SOURCE] Characters: "
+        f"{len(source_code)}"
+    )
+
+    fixes: list[
+        dict[str, Any]
+    ] = []
+
+    # --------------------------------------------------------
+    # GENERATE FIX FOR EACH ISSUE
+    # --------------------------------------------------------
+
+    for index, issue in enumerate(
+        issues,
+        start=1,
+    ):
+
+        print(
+            f"\n[VLM] Generating fix "
+            f"{index}/{len(issues)}"
+        )
+
+        try:
+
+            result = await asyncio.to_thread(
+                generate_healing_fix,
+                issue,
+                screenshot,
+                html_path,
+                source_code,
+            )
+
+            if not isinstance(
+                result,
+                dict,
+            ):
+
+                print(
+                    "[VLM] Invalid fix-generation result."
+                )
+
+                continue
+
+            print(
+                f"[VLM] Fix generation result: "
+                f"{result}"
+            )
+
+            generated_fixes = result.get(
+                "fixes",
+                [],
+            )
+
+            if not isinstance(
+                generated_fixes,
+                list,
+            ):
+
+                generated_fixes = []
+
+            # ------------------------------------------------
+            # SUPPORT SINGLE FIX FORMAT
+            # ------------------------------------------------
+
+            if not generated_fixes:
+
+                old = result.get(
+                    "old"
+                )
+
+                new = result.get(
+                    "new"
+                )
+
+                if old and new:
+
+                    generated_fixes = [
+                        {
+                            "old": old,
+                            "new": new,
+                        }
+                    ]
+
+            # ------------------------------------------------
+            # VALIDATE FIXES
+            # ------------------------------------------------
+
+            for fix in generated_fixes:
+
+                if not isinstance(
+                    fix,
+                    dict,
+                ):
+
+                    continue
+
+                old = fix.get(
+                    "old"
+                )
+
+                new = fix.get(
+                    "new"
+                )
+
+                if not old or not new:
+                    continue
+
+                if old == new:
+
+                    print(
+                        "[VLM] Fix rejected: "
+                        "old and new are identical."
+                    )
+
+                    continue
+
+                if old not in source_code:
+
+                    print(
+                        "[VLM] Fix rejected: "
+                        "old code not found "
+                        "in source."
+                    )
+
+                    continue
+
+                test_source = (
+                    source_code.replace(
+                        old,
+                        new,
+                        1,
+                    )
+                )
+
+                if test_source == source_code:
+
+                    print(
+                        "[VLM] Fix rejected: "
+                        "replacement produced "
+                        "no change."
+                    )
+
+                    continue
+
+                fixes.append(
+                    {
+                        "issue": issue,
+                        "old": old,
+                        "new": new,
+                    }
+                )
+
+        except Exception as exc:
+
+            print(
+                f"[FIX ERROR] {exc}"
+            )
+
+    print(
+        f"\n[VLM] Valid fixes: "
+        f"{len(fixes)}"
+    )
+
+    if not fixes:
+
+        return {
+            **state,
+            "fixes": [],
+            "status": "fix_generation_failed",
+            "error": (
+                "VLM did not produce "
+                "a valid source patch."
+            ),
+        }
 
     return {
         **state,
-        "fixes": [fix],
-        "status": "fix_extracted",
+        "fixes": fixes,
+        "status": "fixes_ready",
+        "error": "",
     }
 
 
 # ============================================================
-# NODE 4 - APPLY FIX
+# APPLY FIX NODE
 # ============================================================
 
-async def apply_fix_node(state: HealingState) -> HealingState:
-    print("\n" + "=" * 60)
-    print("[HEALING] APPLYING SOURCE FIX")
-    print("=" * 60)
+async def apply_fix_node(
+    state: HealingState,
+) -> HealingState:
 
-    fixes = state.get("fixes", [])
+    print("\n" + "=" * 70)
+    print("[GRAPH] APPLY SOURCE FIX")
+    print("=" * 70)
+
+    fixes = state.get(
+        "fixes",
+        [],
+    )
 
     if not fixes:
-        print("[HEALING] No source fix required.")
 
         return {
             **state,
             "applied": False,
-            "status": "nothing_to_apply",
+            "status": "no_fix",
         }
 
-    try:
-        source = read_app_file()
+    if not APP_FILE.exists():
 
-        changed = False
+        return {
+            **state,
+            "applied": False,
+            "status": "error",
+            "error": (
+                f"Source file not found: "
+                f"{APP_FILE}"
+            ),
+        }
 
-        for fix in fixes:
-            old = fix["old"]
-            new = fix["new"]
+    source_code = APP_FILE.read_text(
+        encoding="utf-8",
+    )
 
-            if old in source:
-                source = source.replace(old, new)
-                changed = True
+    original_source = source_code
 
-                print(
-                    "[HEALING] Replaced fixed grid "
-                    "with responsive grid."
-                )
+    applied_count = 0
 
-            elif new in source:
-                print("[HEALING] Fix already applied.")
-            else:
-                raise ValueError(
-                    "Expected source pattern was not found."
-                )
+    for index, fix in enumerate(
+        fixes,
+        start=1,
+    ):
 
-        if changed:
-            APP_FILE.write_text(
-                source,
-                encoding="utf-8",
+        old = fix.get(
+            "old"
+        )
+
+        new = fix.get(
+            "new"
+        )
+
+        if not old or not new:
+            continue
+
+        if old not in source_code:
+
+            print(
+                f"[PATCH {index}] "
+                "Old code not found."
             )
 
-            print("[HEALING] Source file updated.")
+            continue
 
-        return {
-            **state,
-            "applied": changed,
-            "status": "fix_applied",
-            "error": "",
-        }
+        if old == new:
 
-    except Exception as exc:
-        error = str(exc)
+            print(
+                f"[PATCH {index}] "
+                "Skipped identical patch."
+            )
 
-        print(f"[HEALING] Apply fix failed: {error}")
+            continue
+
+        source_code = (
+            source_code.replace(
+                old,
+                new,
+                1,
+            )
+        )
+
+        applied_count += 1
+
+        print(
+            f"[PATCH {index}] "
+            "Applied successfully."
+        )
+
+    if source_code == original_source:
+
+        print(
+            "[PATCH] No changes applied."
+        )
 
         return {
             **state,
             "applied": False,
-            "status": "failed",
-            "error": error,
+            "status": "patch_not_applied",
         }
 
+    APP_FILE.write_text(
+        source_code,
+        encoding="utf-8",
+    )
+
+    print(
+        f"[PATCH] Applied "
+        f"{applied_count} fix(es)."
+    )
+
+    return {
+        **state,
+        "applied": True,
+        "status": "fix_applied",
+        "error": "",
+    }
+
 
 # ============================================================
-# NODE 5 - FRESH PLAYWRIGHT RETEST
+# RETEST NODE
 # ============================================================
 
-async def retest_node(state: HealingState) -> HealingState:
-    print("\n" + "=" * 60)
-    print("[HEALING] FRESH PLAYWRIGHT RETEST")
-    print("=" * 60)
+async def retest_node(
+    state: HealingState,
+) -> HealingState:
 
-    url = state.get("url", BASE_URL)
+    print("\n" + "=" * 70)
+    print("[GRAPH] RETEST AFTER HEALING")
+    print("=" * 70)
 
     try:
-        result = await run_healing_test(url)
 
-        print("[HEALING] Fresh Playwright capture successful.")
+        # run_healing_test is async.
+        result = await run_healing_test(
+            state["url"]
+        )
+
+        if not isinstance(
+            result,
+            dict,
+        ):
+
+            raise RuntimeError(
+                "Playwright retest returned "
+                "an invalid result."
+            )
+
+        screenshots = result.get(
+            "screenshots",
+            [],
+        )
+
+        html_files = result.get(
+            "html_files",
+            [],
+        )
+
+        if not screenshots:
+
+            raise RuntimeError(
+                "Retest did not produce screenshots."
+            )
+
+        if not html_files:
+
+            raise RuntimeError(
+                "Retest did not produce HTML files."
+            )
+
+        print(
+            f"[RETEST] Screenshots: "
+            f"{len(screenshots)}"
+        )
+
+        print(
+            f"[RETEST] HTML files: "
+            f"{len(html_files)}"
+        )
 
         return {
             **state,
-            "screenshots": result.get("screenshots", []),
-            "html_files": result.get("html_files", []),
+            "screenshots": screenshots,
+            "html_files": [
+                str(path)
+                for path in html_files
+            ],
             "retest_failed": False,
             "status": "retested",
             "error": "",
         }
 
     except Exception as exc:
-        error = str(exc)
 
         print(
-            f"[HEALING] Playwright retest failed: {error}"
+            f"[RETEST ERROR] {exc}"
         )
 
-        # IMPORTANT:
-        # Never route a failed retest endlessly back into analyze.
         return {
             **state,
             "retest_failed": True,
             "status": "retest_failed",
-            "error": error,
+            "error": str(exc),
         }
 
 
 # ============================================================
-# NODE 6 - VERIFY
+# VERIFY NODE
 # ============================================================
 
-async def verify_node(state: HealingState) -> HealingState:
-    print("\n" + "=" * 60)
-    print("[HEALING] VERIFYING HEALED UI")
-    print("=" * 60)
+async def verify_node(
+    state: HealingState,
+) -> HealingState:
+
+    print("\n" + "=" * 70)
+    print("[GRAPH] VERIFY HEALING")
+    print("=" * 70)
+
+    # --------------------------------------------------------
+    # NEVER VERIFY AFTER A FAILED RETEST
+    # --------------------------------------------------------
+
+    if state.get(
+        "retest_failed",
+        False,
+    ):
+
+        return {
+            **state,
+            "fixed": False,
+            "status": "verification_failed",
+            "error": state.get(
+                "error",
+                "Retest failed.",
+            ),
+        }
+
+    screenshots = state.get(
+        "screenshots",
+        [],
+    )
+
+    html_files = state.get(
+        "html_files",
+        [],
+    )
+
+    issues = state.get(
+        "issues",
+        [],
+    )
+
+    if not issues:
+
+        analysis = state.get(
+            "analysis",
+            {},
+        )
+
+        issues = analysis.get(
+            "issues",
+            [],
+        )
+
+    if not screenshots:
+
+        return {
+            **state,
+            "fixed": False,
+            "status": "verification_failed",
+            "error": (
+                "No screenshot available "
+                "for verification."
+            ),
+        }
 
     try:
-        source = read_app_file()
 
-        responsive_grid_exists = (
-            'grid-cols-1' in source
-            and 'sm:grid-cols-2' in source
-            and 'lg:grid-cols-4' in source
-            and 'gap-6' in source
-            and 'w-full' in source
+        screenshot = get_screenshot_path(
+            screenshots[0]
         )
 
-        old_grid_exists = OLD_GRID in source
-
-        fixed = (
-            responsive_grid_exists
-            and not old_grid_exists
+        html = get_html_path(
+            screenshots[0],
+            html_files,
         )
 
-        verification = {
-            "fixed": fixed,
-            "responsive_grid": responsive_grid_exists,
-            "old_grid_present": old_grid_exists,
-            "screenshots": state.get("screenshots", []),
-            "html_files": state.get("html_files", []),
+    except Exception as exc:
+
+        return {
+            **state,
+            "fixed": False,
+            "status": "verification_failed",
+            "error": str(exc),
         }
 
-        if fixed:
-            print("[SOURCE VERIFICATION]")
-            print(
-                "The fixed 1200px grid was replaced with "
-                "a responsive Tailwind grid."
+    # --------------------------------------------------------
+    # NO ISSUE
+    # --------------------------------------------------------
+
+    if not issues:
+
+        return {
+            **state,
+            "fixed": True,
+            "status": "no_issue",
+            "verification": {
+                "status": "no_issue",
+                "fixed": True,
+            },
+        }
+
+    try:
+
+        issue = issues[0]
+
+        print(
+            f"[VERIFY] Screenshot: "
+            f"{screenshot}"
+        )
+
+        print(
+            f"[VERIFY] HTML: "
+            f"{html}"
+        )
+
+        verification = await asyncio.to_thread(
+            verify_healing,
+            screenshot,
+            html,
+            issue,
+        )
+
+        if not isinstance(
+            verification,
+            dict,
+        ):
+
+            verification = {
+                "status": "unknown",
+                "fixed": bool(
+                    verification
+                ),
+            }
+
+        status = str(
+            verification.get(
+                "status",
+                "",
+            )
+        ).lower()
+
+        fixed = bool(
+            verification.get(
+                "fixed",
+                False,
+            )
+        )
+
+        if status in {
+            "fixed",
+            "passed",
+            "success",
+            "verified",
+        }:
+
+            fixed = True
+
+        # ----------------------------------------------------
+        # SOURCE VALIDATION
+        # ----------------------------------------------------
+
+        if not APP_FILE.exists():
+
+            fixed = False
+
+            verification[
+                "source_check"
+            ] = "Source file missing."
+
+        else:
+
+            source = APP_FILE.read_text(
+                encoding="utf-8",
             )
 
-            print("[VLM VERIFICATION] fixed=True")
-        else:
-            print("[VLM VERIFICATION] fixed=False")
+            if not source.strip():
+
+                fixed = False
+
+                verification[
+                    "source_check"
+                ] = "Source file is empty."
+
+            else:
+
+                verification[
+                    "source_check"
+                ] = (
+                    "Source file exists "
+                    "and is not empty."
+                )
+
+        print(
+            f"[VERIFY] Fixed: {fixed}"
+        )
+
+        print(
+            f"[VERIFY] Result: "
+            f"{verification}"
+        )
 
         return {
             **state,
             "verification": verification,
             "fixed": fixed,
-            "status": "verified",
+            "status": (
+                "verified"
+                if fixed
+                else "verification_failed"
+            ),
             "error": "",
         }
 
     except Exception as exc:
-        error = str(exc)
 
-        print(f"[HEALING] Verification failed: {error}")
+        print(
+            f"[VERIFY ERROR] {exc}"
+        )
 
         return {
             **state,
             "fixed": False,
-            "status": "failed",
-            "error": error,
+            "status": "verification_failed",
+            "error": str(exc),
         }
 
 
 # ============================================================
-# NODE 7 - GITHUB PUBLISH
+# PUBLISH NODE
 # ============================================================
 
-async def publish_node(state: HealingState) -> HealingState:
-    print("\n" + "=" * 60)
-    print("[HEALING] GITHUB PUBLISH")
-    print("=" * 60)
+async def publish_node(
+    state: HealingState,
+) -> HealingState:
 
-    try:
-        if not state.get("fixed", False):
-            print("[GITHUB] UI is not verified as fixed.")
-            return {
-                **state,
-                "status": "failed",
-                "error": "UI verification failed.",
-            }
+    print("\n" + "=" * 70)
+    print("[GRAPH] GITHUB PUBLISH")
+    print("=" * 70)
 
-        print("[GITHUB] Publishing healed source...")
+    if not state.get(
+        "fixed",
+        False,
+    ):
 
-        # PyGithub integration is synchronous, therefore execute it
-        # outside the async event loop.
-        result = await asyncio.to_thread(
-            publish_healing_fix
+        print(
+            "[GITHUB] Skipped because "
+            "fix was not verified."
         )
-
-        print("[GITHUB] Publish completed.")
 
         return {
             **state,
-            "github_result": result,
-            "status": "success",
+            "status": "not_published",
+        }
+
+    # Do not create a PR for a clean application.
+    if not state.get(
+        "issues",
+        [],
+    ):
+
+        print(
+            "[GITHUB] Skipped because "
+            "no issue was detected."
+        )
+
+        return {
+            **state,
+            "status": "no_issue",
+        }
+
+    try:
+
+        result = await asyncio.to_thread(
+            publish_healing_fix,
+        )
+
+        print(
+            f"[GITHUB] Result: {result}"
+        )
+
+        if isinstance(
+            result,
+            dict,
+        ):
+
+            github_result = result
+
+        else:
+
+            github_result = {
+                "status": "published",
+                "result": str(result),
+            }
+
+        return {
+            **state,
+            "github_result": github_result,
+            "status": "published",
             "error": "",
         }
 
     except Exception as exc:
-        error = str(exc)
 
-        print(f"[GITHUB] Publish failed: {error}")
+        print(
+            f"[GITHUB ERROR] {exc}"
+        )
 
         return {
             **state,
-            "status": "failed",
-            "error": error,
+            "github_result": {
+                "status": "error",
+                "error": str(exc),
+            },
+            "status": "github_failed",
+            "error": str(exc),
         }
 
 
 # ============================================================
-# ROUTING
+# ROUTING FUNCTIONS
 # ============================================================
 
 def route_after_capture(
     state: HealingState,
 ) -> str:
 
-    if state.get("retest_failed"):
-        return END
+    if state.get(
+        "status"
+    ) == "error":
 
-    if state.get("status") == "failed":
-        return END
+        return "end"
 
     return "analyze"
 
 
-def route_after_analysis(
+def route_after_analyze(
     state: HealingState,
 ) -> str:
 
-    if state.get("status") == "failed":
-        return END
+    if state.get(
+        "status"
+    ) == "error":
 
-    analysis = state.get("analysis", {})
+        return "end"
 
-    if analysis.get("status") == "no_issue":
+    issues = state.get(
+        "issues",
+        [],
+    )
+
+    if not issues:
+
         return "verify"
 
     return "extract_fix"
@@ -476,23 +1309,26 @@ def route_after_apply(
     state: HealingState,
 ) -> str:
 
-    if state.get("status") == "failed":
-        return END
+    if state.get(
+        "applied",
+        False,
+    ):
 
-    return "retest"
+        return "retest"
+
+    return "verify"
 
 
 def route_after_retest(
     state: HealingState,
 ) -> str:
 
-    # CRITICAL:
-    # Retest infrastructure failure must terminate.
-    if state.get("retest_failed"):
-        return END
+    if state.get(
+        "retest_failed",
+        False,
+    ):
 
-    if state.get("status") == "failed":
-        return END
+        return "retry"
 
     return "verify"
 
@@ -501,38 +1337,107 @@ def route_after_verify(
     state: HealingState,
 ) -> str:
 
-    if state.get("fixed"):
+    # --------------------------------------------------------
+    # NO ISSUE → END
+    # --------------------------------------------------------
+
+    if state.get(
+        "status"
+    ) == "no_issue":
+
+        return "end"
+
+    # --------------------------------------------------------
+    # VERIFIED → GITHUB
+    # --------------------------------------------------------
+
+    if state.get(
+        "fixed",
+        False,
+    ) and state.get(
+        "issues",
+        [],
+    ):
+
         return "publish"
 
-    attempt = state.get("attempt", 1)
+    # --------------------------------------------------------
+    # RETRY
+    # --------------------------------------------------------
+
+    attempt = state.get(
+        "attempt",
+        1,
+    )
+
     max_attempts = state.get(
         "max_attempts",
         MAX_ATTEMPTS,
     )
 
     if attempt < max_attempts:
+
         return "retry"
 
-    return END
+    return "end"
 
+
+# ============================================================
+# RETRY NODE
+# ============================================================
 
 def retry_node(
     state: HealingState,
 ) -> HealingState:
 
-    attempt = state.get("attempt", 1) + 1
-
-    print("\n" + "=" * 60)
-    print(
-        f"[HEALING] RETRYING "
-        f"(attempt {attempt}/{state.get('max_attempts', MAX_ATTEMPTS)})"
+    next_attempt = (
+        state.get(
+            "attempt",
+            1,
+        )
+        + 1
     )
-    print("=" * 60)
+
+    max_attempts = state.get(
+        "max_attempts",
+        MAX_ATTEMPTS,
+    )
+
+    print("\n" + "=" * 70)
+
+    print(
+        f"[GRAPH] SELF-HEALING RETRY "
+        f"{next_attempt}/{max_attempts}"
+    )
+
+    print("=" * 70)
 
     return {
         **state,
-        "attempt": attempt,
+
+        "attempt": next_attempt,
+
         "status": "retrying",
+
+        "screenshots": [],
+
+        "html_files": [],
+
+        "analysis": {},
+
+        "issues": [],
+
+        "fixes": [],
+
+        "applied": False,
+
+        "retest_failed": False,
+
+        "fixed": False,
+
+        "verification": {},
+
+        "error": "",
     }
 
 
@@ -541,60 +1446,128 @@ def retry_node(
 # ============================================================
 
 def build_healing_graph():
-    graph = StateGraph(HealingState)
 
-    graph.add_node("capture", capture_node)
-    graph.add_node("analyze", analyze_node)
-    graph.add_node("extract_fix", extract_fix_node)
-    graph.add_node("apply_fix", apply_fix_node)
-    graph.add_node("retest", retest_node)
-    graph.add_node("verify", verify_node)
-    graph.add_node("publish", publish_node)
-    graph.add_node("retry", retry_node)
+    graph = StateGraph(
+        HealingState
+    )
 
-    graph.set_entry_point("capture")
+    # --------------------------------------------------------
+    # NODES
+    # --------------------------------------------------------
+
+    graph.add_node(
+        "capture",
+        capture_node,
+    )
+
+    graph.add_node(
+        "analyze",
+        analyze_node,
+    )
+
+    graph.add_node(
+        "extract_fix",
+        extract_fix_node,
+    )
+
+    graph.add_node(
+        "apply_fix",
+        apply_fix_node,
+    )
+
+    graph.add_node(
+        "retest",
+        retest_node,
+    )
+
+    graph.add_node(
+        "verify",
+        verify_node,
+    )
+
+    graph.add_node(
+        "publish",
+        publish_node,
+    )
+
+    graph.add_node(
+        "retry",
+        retry_node,
+    )
+
+    # --------------------------------------------------------
+    # START
+    # --------------------------------------------------------
+
+    graph.set_entry_point(
+        "capture"
+    )
+
+    # --------------------------------------------------------
+    # CAPTURE → ANALYZE
+    # --------------------------------------------------------
 
     graph.add_conditional_edges(
         "capture",
         route_after_capture,
         {
             "analyze": "analyze",
-            END: END,
+            "end": END,
         },
     )
 
+    # --------------------------------------------------------
+    # ANALYZE → FIX / VERIFY
+    # --------------------------------------------------------
+
     graph.add_conditional_edges(
         "analyze",
-        route_after_analysis,
+        route_after_analyze,
         {
             "extract_fix": "extract_fix",
             "verify": "verify",
-            END: END,
+            "end": END,
         },
     )
+
+    # --------------------------------------------------------
+    # EXTRACT → APPLY
+    # --------------------------------------------------------
 
     graph.add_edge(
         "extract_fix",
         "apply_fix",
     )
 
+    # --------------------------------------------------------
+    # APPLY → RETEST / VERIFY
+    # --------------------------------------------------------
+
     graph.add_conditional_edges(
         "apply_fix",
         route_after_apply,
         {
             "retest": "retest",
-            END: END,
+            "verify": "verify",
         },
     )
+
+    # --------------------------------------------------------
+    # RETEST → VERIFY / RETRY
+    # --------------------------------------------------------
 
     graph.add_conditional_edges(
         "retest",
         route_after_retest,
         {
             "verify": "verify",
-            END: END,
+            "retry": "retry",
         },
     )
+
+    # --------------------------------------------------------
+    # VERIFY → PUBLISH / RETRY / END
+    # --------------------------------------------------------
 
     graph.add_conditional_edges(
         "verify",
@@ -602,16 +1575,22 @@ def build_healing_graph():
         {
             "publish": "publish",
             "retry": "retry",
-            END: END,
+            "end": END,
         },
     )
 
-    # Bounded retry:
-    # retry -> analyze
+    # --------------------------------------------------------
+    # RETRY → FRESH CAPTURE
+    # --------------------------------------------------------
+
     graph.add_edge(
         "retry",
-        "analyze",
+        "capture",
     )
+
+    # --------------------------------------------------------
+    # PUBLISH → END
+    # --------------------------------------------------------
 
     graph.add_edge(
         "publish",
@@ -622,67 +1601,165 @@ def build_healing_graph():
 
 
 # ============================================================
-# PUBLIC RUNNER
+# GLOBAL GRAPH
 # ============================================================
 
 healing_graph = build_healing_graph()
 
+
+# ============================================================
+# RUN HEALING AGENT
+# ============================================================
 
 async def run_healing_agent(
     url: str = BASE_URL,
     max_attempts: int = MAX_ATTEMPTS,
 ) -> HealingState:
 
+    print("\n")
+    print("=" * 70)
+    print("OMNISIGHT WEEK 4 SELF-HEALING AGENT")
+    print("=" * 70)
+
+    print(
+        f"[URL]          {url}"
+    )
+
+    print(
+        f"[MAX ATTEMPTS] {max_attempts}"
+    )
+
+    print(
+        "[IMAGE OPT]    Enabled"
+    )
+
+    print(
+        "[HTML REDUCE]  Enabled"
+    )
+
+    print(
+        "[VLM]          Qwen/Qwen3.5-0.8B"
+    )
+
+    print(
+        "[BROWSER]      Playwright"
+    )
+
+    print(
+        "[GRAPH]        LangGraph"
+    )
+
+    print("=" * 70)
+
     initial_state: HealingState = {
         "url": url,
+
         "attempt": 1,
+
         "max_attempts": max_attempts,
+
         "screenshots": [],
+
         "html_files": [],
+
         "analysis": {},
+
+        "issues": [],
+
         "fixes": [],
+
         "applied": False,
+
         "retest_failed": False,
+
         "fixed": False,
+
         "verification": {},
+
         "github_result": {},
+
         "status": "starting",
+
         "error": "",
     }
 
-    print("\n")
-    print("=" * 70)
-    print("OMNISIGHT WEEK 3 SELF-HEALING AGENT")
-    print("=" * 70)
+    try:
 
-    result = await healing_graph.ainvoke(
-        initial_state,
-        config={
-            "recursion_limit": 50,
-        },
-    )
+        final_state = await healing_graph.ainvoke(
+            initial_state,
+            config={
+                "recursion_limit": 50,
+            },
+        )
 
-    print("\n")
-    print("=" * 70)
-    print("OMNISIGHT SELF-HEALING RESULT")
-    print("=" * 70)
+        final_state = dict(
+            final_state
+        )
 
-    print(f"Status   : {result.get('status')}")
-    print(f"Fixed    : {result.get('fixed')}")
-    print(f"Attempts : {result.get('attempt')}")
+        print("\n")
+        print("=" * 70)
+        print("OMNISIGHT HEALING SUMMARY")
+        print("=" * 70)
 
-    if result.get("error"):
-        print(f"Error    : {result.get('error')}")
+        print(
+            f"[STATUS]       "
+            f"{final_state.get('status')}"
+        )
 
-    github_result = result.get("github_result")
+        print(
+            f"[ATTEMPT]      "
+            f"{final_state.get('attempt')}"
+        )
 
-    if github_result:
-        print("\n[GITHUB RESULT]")
-        print(github_result)
+        print(
+            f"[ISSUES]       "
+            f"{len(final_state.get('issues', []))}"
+        )
 
-    print("=" * 70)
+        print(
+            f"[FIXES]        "
+            f"{len(final_state.get('fixes', []))}"
+        )
 
-    return result
+        print(
+            f"[FIXED]        "
+            f"{final_state.get('fixed')}"
+        )
+
+        print(
+            f"[APPLIED]      "
+            f"{final_state.get('applied')}"
+        )
+
+        print(
+            f"[GITHUB]       "
+            f"{final_state.get('github_result')}"
+        )
+
+        if final_state.get(
+            "error"
+        ):
+
+            print(
+                f"[ERROR]        "
+                f"{final_state.get('error')}"
+            )
+
+        print("=" * 70)
+
+        return final_state
+
+    except Exception as exc:
+
+        print(
+            f"[AGENT ERROR] {exc}"
+        )
+
+        return {
+            **initial_state,
+            "status": "error",
+            "error": str(exc),
+        }
 
 
 # ============================================================
@@ -690,6 +1767,7 @@ async def run_healing_agent(
 # ============================================================
 
 if __name__ == "__main__":
+
     asyncio.run(
         run_healing_agent(
             BASE_URL,

@@ -94,7 +94,7 @@ function App() {
           {products.map((product) => (
             <div
               key={product.id}
-              className="bg-white rounded-xl shadow-md overflow-hidden"
+              className="bg-white rounded-xl shadow-md"
             >
               <img
                 src={product.image}
