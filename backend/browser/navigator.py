@@ -1,33 +1,78 @@
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from playwright.async_api import async_playwright
+from playwright.async_api import (
+    Browser,
+    Page,
+    async_playwright,
+)
 
+
+# ============================================================
+# CONFIGURATION
+# ============================================================
 
 SCREENSHOT_DIR = Path("screenshots")
 OUTPUT_DIR = Path("outputs")
 
-SCREENSHOT_DIR.mkdir(parents=True, exist_ok=True)
-OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+BASE_URL = "http://localhost:5173"
 
-
-VIEWPORTS = {
-    "desktop": {"width": 1440, "height": 900},
-    "tablet": {"width": 768, "height": 1024},
-    "mobile": {"width": 390, "height": 844},
+VIEWPORTS: dict[str, dict[str, int]] = {
+    "desktop": {
+        "width": 1440,
+        "height": 900,
+    },
+    "tablet": {
+        "width": 768,
+        "height": 1024,
+    },
+    "mobile": {
+        "width": 390,
+        "height": 844,
+    },
 }
 
 
-async def capture_page(
-    page,
-    name: str,
-    viewport: dict[str, int],
-) -> dict[str, Any]:
+# ============================================================
+# DIRECTORY SETUP
+# ============================================================
 
-    screenshot_path = SCREENSHOT_DIR / f"{name}.png"
-    html_path = OUTPUT_DIR / f"{name}.html"
+def ensure_directories() -> None:
+    SCREENSHOT_DIR.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    OUTPUT_DIR.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+
+# ============================================================
+# PAGE CAPTURE
+# ============================================================
+
+async def capture_page(
+    page: Page,
+    name: str,
+) -> dict[str, Any]:
+    """
+    Capture screenshot and raw HTML for the current page.
+    """
+
+    ensure_directories()
+
+    screenshot_path = (
+        SCREENSHOT_DIR / f"{name}.png"
+    )
+
+    html_path = (
+        OUTPUT_DIR / f"{name}.html"
+    )
 
     await page.screenshot(
         path=str(screenshot_path),
@@ -43,372 +88,686 @@ async def capture_page(
 
     return {
         "name": name,
-        "path": str(screenshot_path),
-        "html": str(html_path),
-        "viewport": viewport,
+        "screenshot": str(
+            screenshot_path
+        ),
+        "html": str(
+            html_path
+        ),
     }
 
 
+# ============================================================
+# SAFE CLICK
+# ============================================================
+
 async def click_if_exists(
-    page,
-    selectors: list[str],
+    page: Page,
+    selector: str,
+    timeout: int = 3000,
 ) -> bool:
+    """
+    Click an element if it exists.
+    """
 
-    for selector in selectors:
-        try:
-            locator = page.locator(selector).first
+    try:
+        locator = page.locator(selector)
 
-            if await locator.count() > 0:
-                await locator.wait_for(
-                    state="visible",
-                    timeout=3000,
-                )
-                await locator.click()
-                await page.wait_for_timeout(500)
-                return True
+        if await locator.count() == 0:
+            return False
 
-        except Exception:
-            continue
+        await locator.first.click(
+            timeout=timeout
+        )
 
-    return False
+        return True
 
+    except Exception:
+        return False
+
+
+# ============================================================
+# SAFE FILL
+# ============================================================
+
+async def fill_if_exists(
+    page: Page,
+    selector: str,
+    value: str,
+    timeout: int = 3000,
+) -> bool:
+    """
+    Fill an input if it exists.
+    """
+
+    try:
+        locator = page.locator(selector)
+
+        if await locator.count() == 0:
+            return False
+
+        await locator.first.fill(
+            value,
+            timeout=timeout,
+        )
+
+        return True
+
+    except Exception:
+        return False
+
+
+# ============================================================
+# PAGE WAIT
+# ============================================================
+
+async def _wait_for_page(
+    page: Page,
+    milliseconds: int = 1000,
+) -> None:
+
+    try:
+        await page.wait_for_load_state(
+            "networkidle",
+            timeout=10000,
+        )
+    except Exception:
+        pass
+
+    await page.wait_for_timeout(
+        milliseconds
+    )
+
+
+# ============================================================
+# WEEK 1
+# COMPLETE BROWSER AUTOMATION
+# ============================================================
 
 async def run_browser_flow(
-    url: str = "http://localhost:5173",
+    url: str = BASE_URL,
 ) -> dict[str, Any]:
+    """
+    Complete Week 1 browser automation.
 
-    screenshots = []
-    html_files = []
+    Flow:
+        Home
+        Products
+        Add product
+        Cart
+        Checkout
+        Checkout form
+        Order complete
+        Responsive screenshots
+    """
+
+    ensure_directories()
+
+    screenshots: list[dict[str, Any]] = []
 
     async with async_playwright() as playwright:
 
-        browser = await playwright.chromium.launch(
+        browser: Browser = await playwright.chromium.launch(
             headless=True
-        )
-
-        page = await browser.new_page(
-            viewport=VIEWPORTS["desktop"]
         )
 
         try:
 
+            page = await browser.new_page(
+                viewport=VIEWPORTS["desktop"]
+            )
+
             # ==================================================
-            # 1. OPEN HOME PAGE
+            # 01 HOME
             # ==================================================
 
             await page.goto(
                 url,
-                wait_until="domcontentloaded",
+                wait_until="networkidle",
+                timeout=60000,
             )
 
-            await page.wait_for_timeout(1000)
+            await _wait_for_page(page)
 
             result = await capture_page(
                 page,
                 "01_home",
-                VIEWPORTS["desktop"],
             )
 
-            screenshots.append({
-                "name": result["name"],
-                "path": result["path"],
-                "viewport": result["viewport"],
-            })
-
-            html_files.append(result["html"])
-
-            # ==================================================
-            # 2. SHOP NOW
-            # ==================================================
-
-            shop_now = page.get_by_role(
-                "button",
-                name="Shop Now",
+            screenshots.append(
+                {
+                    **result,
+                    "viewport": VIEWPORTS[
+                        "desktop"
+                    ],
+                }
             )
 
-            if await shop_now.count() > 0:
+            # ==================================================
+            # 02 PRODUCTS
+            # ==================================================
 
-                await shop_now.first.click()
+            await click_if_exists(
+                page,
+                "text=Shop Now",
+            )
 
-                await page.wait_for_timeout(700)
+            await _wait_for_page(page)
 
             result = await capture_page(
                 page,
                 "02_products",
-                VIEWPORTS["desktop"],
             )
 
-            screenshots.append({
-                "name": result["name"],
-                "path": result["path"],
-                "viewport": result["viewport"],
-            })
-
-            html_files.append(result["html"])
-
-            # ==================================================
-            # 3. ADD PRODUCT TO CART
-            # ==================================================
-
-            added = await click_if_exists(
-                page,
-                [
-                    "button:has-text('Add to Cart')",
-                    "button:has-text('Add to cart')",
-                    "[aria-label*='Add to Cart']",
-                    "[aria-label*='Add to cart']",
-                ],
+            screenshots.append(
+                {
+                    **result,
+                    "viewport": VIEWPORTS[
+                        "desktop"
+                    ],
+                }
             )
 
-            if not added:
+            # ==================================================
+            # 03 CART ITEM
+            # ==================================================
 
-                buttons = page.get_by_role("button")
+            add_button = page.locator(
+                ".add-to-cart"
+            )
 
-                count = await buttons.count()
+            if await add_button.count() > 0:
 
-                for i in range(count):
+                await add_button.first.click()
 
-                    try:
-                        button = buttons.nth(i)
-                        text = (
-                            await button.inner_text()
-                        ).strip().lower()
+            else:
 
-                        if (
-                            "add" in text
-                            and "cart" in text
-                        ):
-                            await button.click()
-                            added = True
-                            break
+                await click_if_exists(
+                    page,
+                    "text=Add to Cart",
+                )
 
-                    except Exception:
-                        continue
-
-            await page.wait_for_timeout(500)
+            await _wait_for_page(page)
 
             result = await capture_page(
                 page,
                 "03_cart_item",
-                VIEWPORTS["desktop"],
             )
 
-            screenshots.append({
-                "name": result["name"],
-                "path": result["path"],
-                "viewport": result["viewport"],
-            })
-
-            html_files.append(result["html"])
+            screenshots.append(
+                {
+                    **result,
+                    "viewport": VIEWPORTS[
+                        "desktop"
+                    ],
+                }
+            )
 
             # ==================================================
-            # 4. OPEN CART
+            # 04 CART
             # ==================================================
 
             await click_if_exists(
                 page,
-                [
-                    "a:has-text('Cart')",
-                    "button:has-text('Cart')",
-                    "[href*='cart']",
-                ],
+                "text=/Cart/",
             )
 
-            await page.wait_for_timeout(700)
+            await _wait_for_page(page)
 
             result = await capture_page(
                 page,
                 "04_cart",
-                VIEWPORTS["desktop"],
             )
 
-            screenshots.append({
-                "name": result["name"],
-                "path": result["path"],
-                "viewport": result["viewport"],
-            })
-
-            html_files.append(result["html"])
+            screenshots.append(
+                {
+                    **result,
+                    "viewport": VIEWPORTS[
+                        "desktop"
+                    ],
+                }
+            )
 
             # ==================================================
-            # 5. CHECKOUT
+            # 05 CHECKOUT
             # ==================================================
 
             await click_if_exists(
                 page,
-                [
-                    "button:has-text('Checkout')",
-                    "a:has-text('Checkout')",
-                    "[href*='checkout']",
-                ],
+                "text=Checkout",
             )
 
-            await page.wait_for_timeout(700)
+            await _wait_for_page(page)
 
             result = await capture_page(
                 page,
                 "05_checkout",
-                VIEWPORTS["desktop"],
             )
 
-            screenshots.append({
-                "name": result["name"],
-                "path": result["path"],
-                "viewport": result["viewport"],
-            })
-
-            html_files.append(result["html"])
+            screenshots.append(
+                {
+                    **result,
+                    "viewport": VIEWPORTS[
+                        "desktop"
+                    ],
+                }
+            )
 
             # ==================================================
-            # 6. FILL CHECKOUT FORM
+            # 06 CHECKOUT FORM
             # ==================================================
 
-            fields = [
-                (
-                    "input[name='name']",
-                    "OmniSight User",
-                ),
-                (
-                    "input[name='email']",
-                    "test@example.com",
-                ),
-                (
-                    "input[name='address']",
-                    "123 Demo Street",
-                ),
-                (
-                    "input[name='city']",
-                    "Kochi",
-                ),
-                (
-                    "input[name='zip']",
-                    "682001",
-                ),
-                (
-                    "input[name='postalCode']",
-                    "682001",
-                ),
-            ]
+            await fill_if_exists(
+                page,
+                'input[name="firstName"]',
+                "Omni",
+            )
 
-            for selector, value in fields:
+            await fill_if_exists(
+                page,
+                'input[name="lastName"]',
+                "Sight",
+            )
 
-                try:
+            await fill_if_exists(
+                page,
+                'input[name="email"]',
+                "omnisight@example.com",
+            )
 
-                    field = page.locator(
-                        selector
-                    ).first
+            await fill_if_exists(
+                page,
+                'input[name="address"]',
+                "123 AI Street",
+            )
 
-                    if await field.count() > 0:
-                        await field.fill(value)
-
-                except Exception:
-                    continue
+            await _wait_for_page(page)
 
             result = await capture_page(
                 page,
                 "06_checkout_form",
-                VIEWPORTS["desktop"],
             )
 
-            screenshots.append({
-                "name": result["name"],
-                "path": result["path"],
-                "viewport": result["viewport"],
-            })
-
-            html_files.append(result["html"])
+            screenshots.append(
+                {
+                    **result,
+                    "viewport": VIEWPORTS[
+                        "desktop"
+                    ],
+                }
+            )
 
             # ==================================================
-            # 7. COMPLETE ORDER
+            # 07 ORDER COMPLETE
             # ==================================================
 
             await click_if_exists(
                 page,
-                [
-                    "button:has-text('Place Order')",
-                    "button:has-text('Place order')",
-                    "button:has-text('Complete Order')",
-                    "button:has-text('Complete order')",
-                    "button:has-text('Confirm')",
-                    "button:has-text('Pay')",
-                ],
+                "text=/Place Order|Complete Order|Confirm Order/",
             )
 
-            await page.wait_for_timeout(1000)
+            await _wait_for_page(page)
 
             result = await capture_page(
                 page,
                 "07_order_complete",
-                VIEWPORTS["desktop"],
             )
 
-            screenshots.append({
-                "name": result["name"],
-                "path": result["path"],
-                "viewport": result["viewport"],
-            })
+            screenshots.append(
+                {
+                    **result,
+                    "viewport": VIEWPORTS[
+                        "desktop"
+                    ],
+                }
+            )
 
-            html_files.append(result["html"])
+            await page.close()
 
             # ==================================================
-            # 8. RESPONSIVE SCREENSHOTS
+            # RESPONSIVE DESKTOP
             # ==================================================
 
-            for device, viewport in VIEWPORTS.items():
+            page = await browser.new_page(
+                viewport=VIEWPORTS["desktop"]
+            )
 
-                await page.set_viewport_size(
-                    viewport
-                )
+            await page.goto(
+                url,
+                wait_until="networkidle",
+                timeout=60000,
+            )
 
-                await page.goto(
-                    url,
-                    wait_until="domcontentloaded",
-                )
+            await _wait_for_page(page)
 
-                await page.wait_for_timeout(500)
+            result = await capture_page(
+                page,
+                "responsive_desktop",
+            )
 
-                result = await capture_page(
-                    page,
-                    f"responsive_{device}",
-                    viewport,
-                )
+            screenshots.append(
+                {
+                    **result,
+                    "viewport": VIEWPORTS[
+                        "desktop"
+                    ],
+                }
+            )
 
-                screenshots.append({
-                    "name": result["name"],
-                    "path": result["path"],
-                    "viewport": result["viewport"],
-                })
+            await page.close()
 
-                html_files.append(result["html"])
+            # ==================================================
+            # RESPONSIVE TABLET
+            # ==================================================
 
-            return {
-                "status": "success",
-                "url": url,
-                "screenshots": screenshots,
-                "html_files": html_files,
-            }
+            page = await browser.new_page(
+                viewport=VIEWPORTS["tablet"]
+            )
 
-        except Exception as exc:
+            await page.goto(
+                url,
+                wait_until="networkidle",
+                timeout=60000,
+            )
 
-            return {
-                "status": "failed",
-                "url": url,
-                "screenshots": screenshots,
-                "html_files": html_files,
-                "error": str(exc),
-            }
+            await _wait_for_page(page)
+
+            result = await capture_page(
+                page,
+                "responsive_tablet",
+            )
+
+            screenshots.append(
+                {
+                    **result,
+                    "viewport": VIEWPORTS[
+                        "tablet"
+                    ],
+                }
+            )
+
+            await page.close()
+
+            # ==================================================
+            # RESPONSIVE MOBILE
+            # ==================================================
+
+            page = await browser.new_page(
+                viewport=VIEWPORTS["mobile"]
+            )
+
+            await page.goto(
+                url,
+                wait_until="networkidle",
+                timeout=60000,
+            )
+
+            await _wait_for_page(page)
+
+            result = await capture_page(
+                page,
+                "responsive_mobile",
+            )
+
+            screenshots.append(
+                {
+                    **result,
+                    "viewport": VIEWPORTS[
+                        "mobile"
+                    ],
+                }
+            )
+
+            await page.close()
 
         finally:
 
             await browser.close()
 
+    return {
+        "status": "success",
+        "url": url,
+        "screenshots": screenshots,
+        "html_files": [
+            item["html"]
+            for item in screenshots
+        ],
+    }
+
+
+# ============================================================
+# WEEK 3
+# FRESH HEALING CAPTURE
+# ============================================================
+
+async def run_healing_test(
+    url: str = BASE_URL,
+) -> dict[str, Any]:
+    """
+    Fresh browser capture for the Week 3
+    LangGraph self-healing workflow.
+
+    IMPORTANT:
+    This function does NOT execute the Week 1
+    checkout flow.
+
+    It only captures:
+        - Desktop
+        - Mobile
+
+    This allows the healing graph to detect a
+    visual problem, modify source code, restart
+    the browser, and verify the result.
+    """
+
+    ensure_directories()
+
+    timestamp = datetime.now().strftime(
+        "%Y%m%d_%H%M%S_%f"
+    )
+
+    screenshots: list[dict[str, Any]] = []
+
+    async with async_playwright() as playwright:
+
+        browser: Browser = await playwright.chromium.launch(
+            headless=True
+        )
+
+        try:
+
+            # ==================================================
+            # HEALING DESKTOP
+            # ==================================================
+
+            page = await browser.new_page(
+                viewport=VIEWPORTS["desktop"]
+            )
+
+            await page.goto(
+                url,
+                wait_until="networkidle",
+                timeout=60000,
+            )
+
+            await _wait_for_page(
+                page,
+                milliseconds=1500,
+            )
+
+            desktop_name = (
+                f"healing_{timestamp}_desktop"
+            )
+
+            result = await capture_page(
+                page,
+                desktop_name,
+            )
+
+            screenshots.append(
+                {
+                    **result,
+                    "viewport": VIEWPORTS[
+                        "desktop"
+                    ],
+                }
+            )
+
+            await page.close()
+
+            # ==================================================
+            # HEALING MOBILE
+            # ==================================================
+
+            page = await browser.new_page(
+                viewport=VIEWPORTS["mobile"]
+            )
+
+            await page.goto(
+                url,
+                wait_until="networkidle",
+                timeout=60000,
+            )
+
+            await _wait_for_page(
+                page,
+                milliseconds=1500,
+            )
+
+            mobile_name = (
+                f"healing_{timestamp}_mobile"
+            )
+
+            result = await capture_page(
+                page,
+                mobile_name,
+            )
+
+            screenshots.append(
+                {
+                    **result,
+                    "viewport": VIEWPORTS[
+                        "mobile"
+                    ],
+                }
+            )
+
+            await page.close()
+
+        finally:
+
+            await browser.close()
+
+    return {
+        "status": "success",
+        "url": url,
+        "screenshots": screenshots,
+        "html_files": [
+            item["html"]
+            for item in screenshots
+        ],
+    }
+
+
+# ============================================================
+# WEEK 3 ALIAS
+# ============================================================
+
+async def capture_healing_state(
+    url: str = BASE_URL,
+) -> dict[str, Any]:
+
+    return await run_healing_test(
+        url
+    )
+
+
+# ============================================================
+# SYNC WRAPPERS
+# ============================================================
+
+def run_navigation(
+    url: str = BASE_URL,
+) -> dict[str, Any]:
+    """
+    Synchronous compatibility wrapper.
+
+    Prefer run_browser_flow() from FastAPI.
+    """
+
+    import asyncio
+
+    return asyncio.run(
+        run_browser_flow(url)
+    )
+
+
+def run_healing_navigation(
+    url: str = BASE_URL,
+) -> dict[str, Any]:
+    """
+    Synchronous compatibility wrapper
+    for the Week 3 healing capture.
+    """
+
+    import asyncio
+
+    return asyncio.run(
+        run_healing_test(url)
+    )
+
+
+# ============================================================
+# LOCAL TEST
+# ============================================================
 
 if __name__ == "__main__":
 
     import asyncio
 
     result = asyncio.run(
-        run_browser_flow()
+        run_healing_test(BASE_URL)
     )
 
-    print(result)
+    print("\n" + "=" * 60)
+    print("OMNISIGHT HEALING NAVIGATION")
+    print("=" * 60)
+
+    print(
+        f"Status: {result.get('status')}"
+    )
+
+    print(
+        f"URL: {result.get('url')}"
+    )
+
+    print(
+        f"Screenshots: "
+        f"{len(result.get('screenshots', []))}"
+    )
+
+    for item in result.get(
+        "screenshots",
+        [],
+    ):
+
+        print(
+            f"\n[{item['name']}]"
+        )
+
+        print(
+            f"Screenshot: "
+            f"{item['screenshot']}"
+        )
+
+        print(
+            f"HTML: "
+            f"{item['html']}"
+        )
+
+        print(
+            f"Viewport: "
+            f"{item['viewport']}"
+        )
+
+    print("=" * 60)

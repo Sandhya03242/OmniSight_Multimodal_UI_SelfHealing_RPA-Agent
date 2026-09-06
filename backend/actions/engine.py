@@ -6,8 +6,8 @@ from typing import Any
 
 class ActionEngine:
     """
-    Parses VLM output and extracts suggested
-    CSS / React fixes.
+    Parses VLM output and extracts executable
+    CSS / React fixes for the Week 3 healing loop.
     """
 
     def parse_vlm_output(
@@ -32,13 +32,13 @@ class ActionEngine:
                 f"issue-{index}",
             )
 
-            suggested_fix = issue.get(
-                "suggested_fix",
-                "",
+            suggested_fix = str(
+                issue.get("suggested_fix", "")
             )
 
-            if not suggested_fix:
-                continue
+            code = self.extract_code(
+                suggested_fix
+            )
 
             fixes.append({
                 "issue_id": issue_id,
@@ -62,9 +62,7 @@ class ActionEngine:
                     suggested_fix
                 ),
                 "suggested_fix": suggested_fix,
-                "code": self.extract_code(
-                    suggested_fix
-                ),
+                "code": code,
             })
 
         return {
@@ -73,6 +71,10 @@ class ActionEngine:
             "total_fixes": len(fixes),
             "fixes": fixes,
         }
+
+    # ========================================================
+    # FIX TYPE DETECTION
+    # ========================================================
 
     def detect_fix_type(
         self,
@@ -123,10 +125,21 @@ class ActionEngine:
 
         return "general"
 
+    # ========================================================
+    # CODE EXTRACTION
+    # ========================================================
+
     def extract_code(
         self,
         text: str,
     ) -> str | None:
+
+        if not text:
+            return None
+
+        # ----------------------------------------------------
+        # Markdown code blocks
+        # ----------------------------------------------------
 
         code_blocks = re.findall(
             r"```(?:css|scss|jsx|tsx|react|javascript|js)?\s*(.*?)```",
@@ -137,6 +150,10 @@ class ActionEngine:
         if code_blocks:
             return code_blocks[0].strip()
 
+        # ----------------------------------------------------
+        # CSS block
+        # ----------------------------------------------------
+
         css_match = re.search(
             r"[.#]?[a-zA-Z][a-zA-Z0-9_-]*\s*\{.*?\}",
             text,
@@ -145,6 +162,10 @@ class ActionEngine:
 
         if css_match:
             return css_match.group(0).strip()
+
+        # ----------------------------------------------------
+        # JSX block
+        # ----------------------------------------------------
 
         jsx_match = re.search(
             r"<[A-Z][^>]*>.*?</[A-Z][^>]*>",
@@ -157,6 +178,10 @@ class ActionEngine:
 
         return None
 
+
+# ============================================================
+# SINGLETON ACTION ENGINE
+# ============================================================
 
 _action_engine: ActionEngine | None = None
 
@@ -173,3 +198,25 @@ def extract_fixes(
     return _action_engine.parse_vlm_output(
         vlm_result
     )
+
+
+# ============================================================
+# WEEK 3 - EXECUTABLE FIX VALIDATION
+# ============================================================
+
+def validate_fix(
+    fix: dict[str, Any],
+) -> bool:
+
+    code = fix.get("code")
+
+    if not code:
+        return False
+
+    if not isinstance(code, str):
+        return False
+
+    if not code.strip():
+        return False
+
+    return True

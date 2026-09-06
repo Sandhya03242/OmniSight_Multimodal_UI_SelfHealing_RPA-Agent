@@ -65,3 +65,42 @@ class VisionAnalysisResult(BaseModel):
         default_factory=list
     )
     raw_response: str | None = None
+
+
+# ============================================================
+# WEEK 3 - SELF-HEALING
+# ============================================================
+
+class HealingRequest(BaseModel):
+    url: str = "http://localhost:5173"
+    screenshot_path: str = "screenshots/01_home.png"
+    html_path: str = "outputs/01_home.html"
+    max_attempts: int = 3
+
+
+class HealingFix(BaseModel):
+    issue_id: str
+    fix_type: str
+    element: str | None = None
+    description: str = ""
+    suggested_fix: str = ""
+    code: str | None = None
+
+
+class HealingVerification(BaseModel):
+    fixed: bool
+    reason: str = ""
+
+
+class HealingResult(BaseModel):
+    status: str
+    url: str
+    attempts: int = 0
+    issues_found: int = 0
+    fixes_generated: int = 0
+    fixed: bool = False
+    verification: HealingVerification | None = None
+    fixes: list[HealingFix] = Field(
+        default_factory=list
+    )
+    error: str | None = None

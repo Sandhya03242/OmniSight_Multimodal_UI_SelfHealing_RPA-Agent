@@ -3,15 +3,9 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel, Field
 
-from backend.actions.engine import extract_fixes
-from backend.browser.navigator import run_browser_flow
-from backend.models.schemas import (
-    NavigationRequest,
-    VisionRequest,
-    WebhookRequest,
-)
-from backend.vision.analyzer import analyze_ui
+from backend.agent.graph import run_healing_agent
 
 
 # ============================================================
@@ -20,12 +14,36 @@ from backend.vision.analyzer import analyze_ui
 
 app = FastAPI(
     title="OmniSight",
-    description=(
-        "OmniSight - Browser Automation, "
-        "VLM UI Analysis and Action Engine"
-    ),
-    version="2.0.0",
+    description="Multimodal UI Self-Healing & RPA Agent",
+    version="3.0.0",
 )
+
+
+# ============================================================
+# REQUEST MODELS
+# ============================================================
+
+class HealingRequest(BaseModel):
+    url: str = Field(
+        default="http://localhost:5173",
+        description="URL of the application to test",
+    )
+
+    max_attempts: int = Field(
+        default=2,
+        ge=1,
+        le=5,
+        description="Maximum number of healing attempts",
+    )
+
+
+class WebhookRequest(BaseModel):
+    event: str = "build"
+    status: str = "success"
+    repository: str | None = None
+    branch: str = "main"
+    commit: str | None = None
+    url: str = "http://localhost:5173"
 
 
 # ============================================================
@@ -33,12 +51,20 @@ app = FastAPI(
 # ============================================================
 
 @app.get("/")
-async def root() -> dict[str, str]:
-
+async def root() -> dict[str, Any]:
     return {
-        "project": "OmniSight",
-        "week": "Week 2",
+        "name": "OmniSight",
+        "description": "Multimodal UI Self-Healing & RPA Agent",
+        "version": "3.0.0",
         "status": "running",
+        "endpoints": {
+            "health": "GET /health",
+            "navigation": "POST /navigation/run",
+            "vision": "POST /vision/analyze",
+            "actions": "POST /actions/extract-fixes",
+            "webhook": "POST /webhook",
+            "healing": "POST /healing/run",
+        },
     }
 
 
@@ -47,158 +73,184 @@ async def root() -> dict[str, str]:
 # ============================================================
 
 @app.get("/health")
-async def health() -> dict[str, str]:
-
+async def health() -> dict[str, Any]:
     return {
         "status": "healthy",
+        "service": "OmniSight",
+        "version": "3.0.0",
     }
 
 
 # ============================================================
-# BROWSER AUTOMATION
+# WEEK 1 - BROWSER NAVIGATION
 # ============================================================
 
 @app.post("/navigation/run")
 async def navigation_run(
-    request: NavigationRequest,
+    url: str = "http://localhost:5173",
 ) -> dict[str, Any]:
 
-    result = await run_browser_flow(
-        request.url
-    )
+    try:
+        from backend.browser.navigator import run_browser_flow
 
-    if result["status"] == "failed":
-
-        raise HTTPException(
-            status_code=500,
-            detail=result,
-        )
-
-    return {
-        "status": "success",
-        "message": "Browser automation completed",
-        "result": result,
-    }
-
-
-# ============================================================
-# CI/CD WEBHOOK
-# ============================================================
-
-@app.post("/webhook")
-async def webhook(
-    request: WebhookRequest,
-) -> dict[str, Any]:
-
-    if request.event != "build.completed":
+        result = await run_browser_flow(url)
 
         return {
-            "status": "ignored",
-            "message": (
-                f"Event '{request.event}' "
-                "does not trigger testing"
-            ),
+            "status": "success",
+            "message": "Browser navigation completed.",
+            "result": result,
         }
 
-    result = await run_browser_flow(
-        request.url
-    )
-
-    if result["status"] == "failed":
-
+    except Exception as exc:
         raise HTTPException(
             status_code=500,
-            detail=result,
+            detail={
+                "status": "failed",
+                "error": str(exc),
+            },
         )
-
-    return {
-        "status": "success",
-        "message": (
-            "Build event received and "
-            "browser testing completed"
-        ),
-        "result": result,
-    }
 
 
 # ============================================================
-# VISION ANALYSIS
+# WEEK 2 - VISION ANALYSIS
 # ============================================================
 
 @app.post("/vision/analyze")
 async def vision_analyze(
-    request: VisionRequest,
+    screenshot: str,
+    html: str | None = None,
 ) -> dict[str, Any]:
 
     try:
+        from backend.vision.vision_analyzer import analyze_ui
 
-        result = analyze_ui(
-            screenshot_path=request.screenshot_path,
-            html_path=request.html_path,
-        )
-
-        return result
-
-    except FileNotFoundError as exc:
-
-        raise HTTPException(
-            status_code=404,
-            detail=str(exc),
-        ) from exc
-
-    except Exception as exc:
-
-        raise HTTPException(
-            status_code=500,
-            detail={
-                "status": "failed",
-                "error": str(exc),
-            },
-        ) from exc
-
-
-# ============================================================
-# ACTION ENGINE
-# ============================================================
-
-@app.post("/actions/extract-fixes")
-async def actions_extract_fixes(
-    request: VisionRequest,
-) -> dict[str, Any]:
-
-    try:
-
-        # --------------------------------------------
-        # Run VLM analysis
-        # --------------------------------------------
-
-        vlm_result = analyze_ui(
-            screenshot_path=request.screenshot_path,
-            html_path=request.html_path,
-        )
-
-        # --------------------------------------------
-        # Extract CSS / React fixes
-        # --------------------------------------------
-
-        action_result = extract_fixes(
-            vlm_result
+        result = await analyze_ui(
+            screenshot=screenshot,
+            html=html or "",
         )
 
         return {
             "status": "success",
-            "vision": vlm_result,
-            "actions": action_result,
+            "result": result,
         }
 
-    except FileNotFoundError as exc:
-
+    except Exception as exc:
         raise HTTPException(
-            status_code=404,
-            detail=str(exc),
-        ) from exc
+            status_code=500,
+            detail={
+                "status": "failed",
+                "error": str(exc),
+            },
+        )
+
+
+# ============================================================
+# WEEK 2 - ACTION ENGINE
+# ============================================================
+
+@app.post("/actions/extract-fixes")
+async def extract_fixes(
+    analysis: dict[str, Any],
+) -> dict[str, Any]:
+
+    try:
+        from backend.actions.action_engine import extract_fixes
+
+        result = extract_fixes(analysis)
+
+        return {
+            "status": "success",
+            "result": result,
+        }
 
     except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "status": "failed",
+                "error": str(exc),
+            },
+        )
+
+
+# ============================================================
+# WEEK 2 - CI/CD WEBHOOK
+# ============================================================
+
+@app.post("/webhook")
+async def webhook(
+    payload: WebhookRequest,
+) -> dict[str, Any]:
+
+    print("\n" + "=" * 60)
+    print("[WEBHOOK] CI/CD EVENT RECEIVED")
+    print("=" * 60)
+
+    print(f"Event      : {payload.event}")
+    print(f"Status     : {payload.status}")
+    print(f"Repository : {payload.repository}")
+    print(f"Branch     : {payload.branch}")
+    print(f"Commit     : {payload.commit}")
+
+    return {
+        "status": "received",
+        "event": payload.event,
+        "repository": payload.repository,
+        "branch": payload.branch,
+        "commit": payload.commit,
+        "message": "Webhook received successfully.",
+    }
+
+
+# ============================================================
+# WEEK 3 - SELF HEALING
+# ============================================================
+
+@app.post("/healing/run")
+async def healing_run(
+    request: HealingRequest,
+) -> dict[str, Any]:
+
+    print("\n" + "=" * 70)
+    print("OMNISIGHT WEEK 3 HEALING API")
+    print("=" * 70)
+
+    print(f"URL          : {request.url}")
+    print(f"Max attempts : {request.max_attempts}")
+
+    try:
+        result = await run_healing_agent(
+            url=request.url,
+            max_attempts=request.max_attempts,
+        )
+
+        return {
+            "status": result.get("status"),
+            "fixed": result.get("fixed", False),
+            "attempts": result.get("attempt", 1),
+            "url": result.get("url"),
+            "screenshots": result.get("screenshots", []),
+            "html_files": result.get("html_files", []),
+            "analysis": result.get("analysis", {}),
+            "fixes": result.get("fixes", []),
+            "verification": result.get(
+                "verification",
+                {},
+            ),
+            "github": result.get(
+                "github_result",
+                {},
+            ),
+            "error": result.get(
+                "error",
+                "",
+            ),
+        }
+
+    except Exception as exc:
+        print(
+            f"[HEALING API] Error: {exc}"
+        )
 
         raise HTTPException(
             status_code=500,
@@ -206,20 +258,42 @@ async def actions_extract_fixes(
                 "status": "failed",
                 "error": str(exc),
             },
-        ) from exc
+        )
 
 
 # ============================================================
-# RUN SERVER
+# WEEK 3 - SIMPLE STATUS ENDPOINT
 # ============================================================
 
-if __name__ == "__main__":
+@app.get("/healing/status")
+async def healing_status() -> dict[str, Any]:
+    return {
+        "status": "ready",
+        "module": "Week 3 Self-Healing Agent",
+        "pipeline": [
+            "Playwright capture",
+            "UI analysis",
+            "Fix extraction",
+            "Source modification",
+            "Fresh Playwright retest",
+            "UI verification",
+            "GitHub publish",
+        ],
+    }
 
-    import uvicorn
 
-    uvicorn.run(
-        "main:app",
-        host="127.0.0.1",
-        port=8000,
-        reload=True,
-    )
+# ============================================================
+# APPLICATION STARTUP
+# ============================================================
+
+@app.on_event("startup")
+async def startup_event() -> None:
+    print("\n")
+    print("=" * 70)
+    print("OMNISIGHT API")
+    print("=" * 70)
+    print("Version : 3.0.0")
+    print("Status  : Running")
+    print("URL     : http://127.0.0.1:8000")
+    print("Docs    : http://127.0.0.1:8000/docs")
+    print("=" * 70)
