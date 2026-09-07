@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import time
 from pathlib import Path
 from typing import Any, TypedDict
 
@@ -25,6 +27,9 @@ APP_FILE = Path("demo-store/src/App.jsx")
 
 MAX_ATTEMPTS = 2
 
+# Give Vite enough time to detect the App.jsx modification.
+VITE_REBUILD_WAIT_SECONDS = 2.0
+
 
 # ============================================================
 # LANGGRAPH STATE
@@ -36,17 +41,17 @@ class HealingState(TypedDict, total=False):
     attempt: int
     max_attempts: int
 
-    # Playwright returns screenshot dictionaries:
-    #
-    # {
-    #     "name": "...",
-    #     "screenshot": "...png",
-    #     "html": "...html",
-    #     "viewport": {...}
-    # }
-    #
     screenshots: list[dict[str, Any]]
     html_files: list[str]
+
+    before_screenshot: str | None
+    after_screenshot: str | None
+
+    before_html: str | None
+    after_html: str | None
+
+    before_hash: str | None
+    after_hash: str | None
 
     analysis: dict[str, Any]
     issues: list[dict[str, Any]]
@@ -71,14 +76,18 @@ class HealingState(TypedDict, total=False):
 def get_screenshot_path(
     screenshot_data: Any,
 ) -> str:
-    """
-    Convert a Playwright screenshot entry into a string path.
-    """
 
-    if isinstance(screenshot_data, dict):
-        path = screenshot_data.get("screenshot")
+    if isinstance(
+        screenshot_data,
+        dict,
+    ):
+
+        path = screenshot_data.get(
+            "screenshot"
+        )
 
         if not path:
+
             raise ValueError(
                 "Screenshot dictionary does not contain "
                 "'screenshot' path."
@@ -86,8 +95,14 @@ def get_screenshot_path(
 
         return str(path)
 
-    if isinstance(screenshot_data, (str, Path)):
-        return str(screenshot_data)
+    if isinstance(
+        screenshot_data,
+        (str, Path),
+    ):
+
+        return str(
+            screenshot_data
+        )
 
     raise TypeError(
         "Screenshot must be a path string or dictionary, "
@@ -99,26 +114,185 @@ def get_html_path(
     screenshot_data: Any,
     html_files: list[str],
 ) -> str:
-    """
-    Get the HTML path associated with a screenshot.
 
-    Prefer the HTML path stored inside the screenshot
-    dictionary. Fall back to html_files.
-    """
+    if isinstance(
+        screenshot_data,
+        dict,
+    ):
 
-    if isinstance(screenshot_data, dict):
-
-        html_path = screenshot_data.get("html")
+        html_path = screenshot_data.get(
+            "html"
+        )
 
         if html_path:
-            return str(html_path)
+
+            return str(
+                html_path
+            )
 
     if html_files:
-        return str(html_files[0])
+
+        return str(
+            html_files[0]
+        )
 
     raise ValueError(
         "No HTML file available."
     )
+
+
+def get_first_screenshot(
+    screenshots: Any,
+) -> str | None:
+
+    if not screenshots:
+
+        return None
+
+    try:
+
+        return get_screenshot_path(
+            screenshots[0]
+        )
+
+    except Exception:
+
+        return None
+
+
+def get_first_html(
+    screenshots: Any,
+    html_files: list[str],
+) -> str | None:
+
+    if not screenshots:
+
+        return None
+
+    try:
+
+        return get_html_path(
+            screenshots[0],
+            html_files,
+        )
+
+    except Exception:
+
+        return None
+
+
+def file_hash(
+    path: str | Path,
+) -> str:
+
+    file_path = Path(
+        path
+    )
+
+    if not file_path.exists():
+
+        return ""
+
+    digest = hashlib.sha256()
+
+    with file_path.open(
+        "rb"
+    ) as file:
+
+        for chunk in iter(
+            lambda: file.read(1024 * 1024),
+            b"",
+        ):
+
+            digest.update(
+                chunk
+            )
+
+    return digest.hexdigest()
+
+
+def wait_for_vite_rebuild() -> None:
+
+    print(
+        f"[VITE] Waiting "
+        f"{VITE_REBUILD_WAIT_SECONDS}s "
+        f"for React/Vite rebuild..."
+    )
+
+    time.sleep(
+        VITE_REBUILD_WAIT_SECONDS
+    )
+
+
+def choose_retest_screenshot(
+    screenshots: list[Any],
+    before_screenshot: str | None,
+) -> str:
+
+    if not screenshots:
+
+        raise RuntimeError(
+            "No screenshots were returned by Playwright."
+        )
+
+    # --------------------------------------------------------
+    # Prefer a screenshot that is NOT the original BEFORE path.
+    # --------------------------------------------------------
+
+    before_normalized = (
+        str(
+            Path(
+                before_screenshot
+            ).resolve()
+        )
+        if before_screenshot
+        else None
+    )
+
+    candidates: list[str] = []
+
+    for screenshot_data in screenshots:
+
+        try:
+
+            path = get_screenshot_path(
+                screenshot_data
+            )
+
+            candidates.append(
+                path
+            )
+
+        except Exception:
+
+            continue
+
+    if not candidates:
+
+        raise RuntimeError(
+            "Playwright returned screenshots, but no "
+            "valid screenshot paths were found."
+        )
+
+    for candidate in candidates:
+
+        candidate_normalized = str(
+            Path(
+                candidate
+            ).resolve()
+        )
+
+        if (
+            before_normalized is None
+            or candidate_normalized
+            != before_normalized
+        ):
+
+            return candidate
+
+    # If every path is identical, return the first one.
+    # Hash validation below will catch this.
+    return candidates[0]
 
 
 # ============================================================
@@ -130,16 +304,24 @@ async def capture_node(
 ) -> HealingState:
 
     print("\n" + "=" * 70)
-    print("[GRAPH] CAPTURE")
+    print("[GRAPH] CAPTURE BEFORE")
     print("=" * 70)
 
-    url = state["url"]
+    url = state[
+        "url"
+    ]
 
     try:
 
-        result = await run_healing_test(url)
+        result = await run_healing_test(
+            url
+        )
 
-        if not isinstance(result, dict):
+        if not isinstance(
+            result,
+            dict,
+        ):
+
             raise RuntimeError(
                 "Playwright returned an invalid result."
             )
@@ -155,14 +337,39 @@ async def capture_node(
         )
 
         if not screenshots:
+
             raise RuntimeError(
                 "Playwright did not produce any screenshots."
             )
 
         if not html_files:
+
             raise RuntimeError(
                 "Playwright did not produce any HTML files."
             )
+
+        before_screenshot = (
+            get_first_screenshot(
+                screenshots
+            )
+        )
+
+        before_html = (
+            get_first_html(
+                screenshots,
+                html_files,
+            )
+        )
+
+        if not before_screenshot:
+
+            raise RuntimeError(
+                "Could not determine BEFORE screenshot."
+            )
+
+        before_hash = file_hash(
+            before_screenshot
+        )
 
         print(
             f"[PLAYWRIGHT] Screenshots: "
@@ -174,16 +381,61 @@ async def capture_node(
             f"{len(html_files)}"
         )
 
+        print(
+            f"[BEFORE] "
+            f"{before_screenshot}"
+        )
+
+        print(
+            f"[BEFORE HTML] "
+            f"{before_html}"
+        )
+
+        print(
+            f"[BEFORE HASH] "
+            f"{before_hash[:16]}..."
+        )
+
         return {
             **state,
-            "screenshots": screenshots,
+
+            "screenshots":
+                screenshots,
+
             "html_files": [
-                str(path)
+                str(
+                    path
+                )
                 for path in html_files
             ],
-            "status": "captured",
-            "error": "",
-            "retest_failed": False,
+
+            "before_screenshot":
+                before_screenshot,
+
+            "before_html":
+                before_html,
+
+            "before_hash":
+                before_hash,
+
+            # New attempt starts without AFTER.
+            "after_screenshot":
+                None,
+
+            "after_html":
+                None,
+
+            "after_hash":
+                None,
+
+            "status":
+                "captured",
+
+            "error":
+                "",
+
+            "retest_failed":
+                False,
         }
 
     except Exception as exc:
@@ -194,8 +446,12 @@ async def capture_node(
 
         return {
             **state,
-            "status": "error",
-            "error": str(exc),
+
+            "status":
+                "error",
+
+            "error":
+                str(exc),
         }
 
 
@@ -208,7 +464,7 @@ async def analyze_node(
 ) -> HealingState:
 
     print("\n" + "=" * 70)
-    print("[GRAPH] WEEK 4 VLM ANALYSIS")
+    print("[GRAPH] VLM ANALYSIS")
     print("=" * 70)
 
     screenshots = state.get(
@@ -225,20 +481,15 @@ async def analyze_node(
 
         return {
             **state,
-            "status": "error",
-            "error": (
-                "No screenshots available for analysis."
-            ),
+
+            "status":
+                "error",
+
+            "error":
+                "No screenshots available for analysis.",
         }
 
     try:
-
-        # ----------------------------------------------------
-        # IMPORTANT FIX
-        # ----------------------------------------------------
-        # Playwright returns a dictionary.
-        # Extract the actual screenshot path.
-        # ----------------------------------------------------
 
         screenshot_data = screenshots[0]
 
@@ -252,16 +503,14 @@ async def analyze_node(
         )
 
         print(
-            f"[GRAPH] Screenshot: {screenshot}"
+            f"[GRAPH] Screenshot: "
+            f"{screenshot}"
         )
 
         print(
-            f"[GRAPH] HTML: {html}"
+            f"[GRAPH] HTML: "
+            f"{html}"
         )
-
-        # ----------------------------------------------------
-        # VLM ANALYSIS
-        # ----------------------------------------------------
 
         analysis = await asyncio.to_thread(
             analyze_ui,
@@ -269,7 +518,10 @@ async def analyze_node(
             html,
         )
 
-        if not isinstance(analysis, dict):
+        if not isinstance(
+            analysis,
+            dict,
+        ):
 
             raise RuntimeError(
                 "VLM analyzer returned an invalid result."
@@ -286,10 +538,6 @@ async def analyze_node(
         ):
 
             issues = []
-
-        # ----------------------------------------------------
-        # NORMALIZE ISSUES
-        # ----------------------------------------------------
 
         dashboard_issues: list[
             dict[str, Any]
@@ -312,7 +560,8 @@ async def analyze_node(
             else:
 
                 normalized_issue = {
-                    "description": str(issue)
+                    "description":
+                        str(issue)
                 }
 
             normalized_issue.setdefault(
@@ -330,13 +579,16 @@ async def analyze_node(
                 screenshot,
             )
 
+            normalized_issue.setdefault(
+                "before_screenshot",
+                state.get(
+                    "before_screenshot"
+                ),
+            )
+
             dashboard_issues.append(
                 normalized_issue
             )
-
-        # ----------------------------------------------------
-        # OPTIMIZATION INFORMATION
-        # ----------------------------------------------------
 
         optimization = analysis.get(
             "optimization",
@@ -350,34 +602,26 @@ async def analyze_node(
 
             optimization = {}
 
-        image_stats = optimization.get(
-            "image",
-            {},
-        )
-
-        html_stats = optimization.get(
-            "html",
-            {},
-        )
-
         print(
             "[WEEK 4] Image optimization:",
-            image_stats,
+            optimization.get(
+                "image",
+                {},
+            ),
         )
 
         print(
             "[WEEK 4] HTML reduction:",
-            html_stats,
+            optimization.get(
+                "html",
+                {},
+            ),
         )
 
         print(
             f"[VLM] Detected issues: "
             f"{len(dashboard_issues)}"
         )
-
-        # ----------------------------------------------------
-        # ISSUE FOUND
-        # ----------------------------------------------------
 
         if dashboard_issues:
 
@@ -395,16 +639,22 @@ async def analyze_node(
 
             return {
                 **state,
-                "analysis": analysis,
-                "issues": dashboard_issues,
-                "status": "issue_found",
-                "fixed": False,
-                "error": "",
-            }
 
-        # ----------------------------------------------------
-        # NO ISSUE
-        # ----------------------------------------------------
+                "analysis":
+                    analysis,
+
+                "issues":
+                    dashboard_issues,
+
+                "status":
+                    "issue_found",
+
+                "fixed":
+                    False,
+
+                "error":
+                    "",
+            }
 
         print(
             "[VLM] No UI issue detected."
@@ -418,11 +668,21 @@ async def analyze_node(
 
         return {
             **state,
-            "analysis": analysis,
-            "issues": [],
-            "fixed": True,
-            "status": "no_issue",
-            "error": "",
+
+            "analysis":
+                analysis,
+
+            "issues":
+                [],
+
+            "fixed":
+                True,
+
+            "status":
+                "no_issue",
+
+            "error":
+                "",
         }
 
     except Exception as exc:
@@ -433,8 +693,12 @@ async def analyze_node(
 
         return {
             **state,
-            "status": "error",
-            "error": str(exc),
+
+            "status":
+                "error",
+
+            "error":
+                str(exc),
         }
 
 
@@ -472,28 +736,28 @@ async def extract_fix_node(
         [],
     )
 
-    html_files = state.get(
-        "html_files",
-        [],
-    )
-
     if not issues:
 
         return {
             **state,
-            "fixes": [],
-            "status": "no_fix_required",
+
+            "fixes":
+                [],
+
+            "status":
+                "no_fix_required",
         }
 
     if not screenshots:
 
         return {
             **state,
-            "status": "error",
-            "error": (
-                "No screenshot available "
-                "for fix generation."
-            ),
+
+            "status":
+                "error",
+
+            "error":
+                "No screenshot available for fix generation.",
         }
 
     try:
@@ -502,32 +766,28 @@ async def extract_fix_node(
             screenshots[0]
         )
 
-        html_path = get_html_path(
-            screenshots[0],
-            html_files,
-        )
-
     except Exception as exc:
 
         return {
             **state,
-            "status": "error",
-            "error": str(exc),
-        }
 
-    # --------------------------------------------------------
-    # READ SOURCE
-    # --------------------------------------------------------
+            "status":
+                "error",
+
+            "error":
+                str(exc),
+        }
 
     if not APP_FILE.exists():
 
         return {
             **state,
-            "status": "error",
-            "error": (
-                f"Source file not found: "
-                f"{APP_FILE}"
-            ),
+
+            "status":
+                "error",
+
+            "error":
+                f"Source file not found: {APP_FILE}",
         }
 
     source_code = APP_FILE.read_text(
@@ -538,14 +798,17 @@ async def extract_fix_node(
 
         return {
             **state,
-            "status": "error",
-            "error": (
-                "Source file is empty."
-            ),
+
+            "status":
+                "error",
+
+            "error":
+                "Source file is empty.",
         }
 
     print(
-        f"[SOURCE] Reading: {APP_FILE}"
+        f"[SOURCE] Reading: "
+        f"{APP_FILE}"
     )
 
     print(
@@ -556,10 +819,6 @@ async def extract_fix_node(
     fixes: list[
         dict[str, Any]
     ] = []
-
-    # --------------------------------------------------------
-    # GENERATE FIX FOR EACH ISSUE
-    # --------------------------------------------------------
 
     for index, issue in enumerate(
         issues,
@@ -575,9 +834,8 @@ async def extract_fix_node(
 
             result = await asyncio.to_thread(
                 generate_healing_fix,
-                issue,
                 screenshot,
-                html_path,
+                issue,
                 source_code,
             )
 
@@ -586,16 +844,7 @@ async def extract_fix_node(
                 dict,
             ):
 
-                print(
-                    "[VLM] Invalid fix-generation result."
-                )
-
                 continue
-
-            print(
-                f"[VLM] Fix generation result: "
-                f"{result}"
-            )
 
             generated_fixes = result.get(
                 "fixes",
@@ -608,10 +857,6 @@ async def extract_fix_node(
             ):
 
                 generated_fixes = []
-
-            # ------------------------------------------------
-            # SUPPORT SINGLE FIX FORMAT
-            # ------------------------------------------------
 
             if not generated_fixes:
 
@@ -627,14 +872,19 @@ async def extract_fix_node(
 
                     generated_fixes = [
                         {
-                            "old": old,
-                            "new": new,
+                            "old":
+                                old,
+
+                            "new":
+                                new,
+
+                            "reason":
+                                result.get(
+                                    "reason",
+                                    "",
+                                ),
                         }
                     ]
-
-            # ------------------------------------------------
-            # VALIDATE FIXES
-            # ------------------------------------------------
 
             for fix in generated_fixes:
 
@@ -654,13 +904,14 @@ async def extract_fix_node(
                 )
 
                 if not old or not new:
+
                     continue
 
                 if old == new:
 
                     print(
                         "[VLM] Fix rejected: "
-                        "old and new are identical."
+                        "old/new identical."
                     )
 
                     continue
@@ -669,8 +920,7 @@ async def extract_fix_node(
 
                     print(
                         "[VLM] Fix rejected: "
-                        "old code not found "
-                        "in source."
+                        "old code not found."
                     )
 
                     continue
@@ -685,19 +935,24 @@ async def extract_fix_node(
 
                 if test_source == source_code:
 
-                    print(
-                        "[VLM] Fix rejected: "
-                        "replacement produced "
-                        "no change."
-                    )
-
                     continue
 
                 fixes.append(
                     {
-                        "issue": issue,
-                        "old": old,
-                        "new": new,
+                        "issue":
+                            issue,
+
+                        "old":
+                            old,
+
+                        "new":
+                            new,
+
+                        "reason":
+                            fix.get(
+                                "reason",
+                                "",
+                            ),
                     }
                 )
 
@@ -708,7 +963,7 @@ async def extract_fix_node(
             )
 
     print(
-        f"\n[VLM] Valid fixes: "
+        f"[VLM] Valid fixes: "
         f"{len(fixes)}"
     )
 
@@ -716,19 +971,28 @@ async def extract_fix_node(
 
         return {
             **state,
-            "fixes": [],
-            "status": "fix_generation_failed",
-            "error": (
-                "VLM did not produce "
-                "a valid source patch."
-            ),
+
+            "fixes":
+                [],
+
+            "status":
+                "fix_generation_failed",
+
+            "error":
+                "VLM did not produce a valid source patch.",
         }
 
     return {
         **state,
-        "fixes": fixes,
-        "status": "fixes_ready",
-        "error": "",
+
+        "fixes":
+            fixes,
+
+        "status":
+            "fixes_ready",
+
+        "error":
+            "",
     }
 
 
@@ -753,20 +1017,27 @@ async def apply_fix_node(
 
         return {
             **state,
-            "applied": False,
-            "status": "no_fix",
+
+            "applied":
+                False,
+
+            "status":
+                "no_fix",
         }
 
     if not APP_FILE.exists():
 
         return {
             **state,
-            "applied": False,
-            "status": "error",
-            "error": (
-                f"Source file not found: "
-                f"{APP_FILE}"
-            ),
+
+            "applied":
+                False,
+
+            "status":
+                "error",
+
+            "error":
+                f"Source file not found: {APP_FILE}",
         }
 
     source_code = APP_FILE.read_text(
@@ -791,6 +1062,11 @@ async def apply_fix_node(
         )
 
         if not old or not new:
+
+            continue
+
+        if old == new:
+
             continue
 
         if old not in source_code:
@@ -798,15 +1074,6 @@ async def apply_fix_node(
             print(
                 f"[PATCH {index}] "
                 "Old code not found."
-            )
-
-            continue
-
-        if old == new:
-
-            print(
-                f"[PATCH {index}] "
-                "Skipped identical patch."
             )
 
             continue
@@ -834,8 +1101,12 @@ async def apply_fix_node(
 
         return {
             **state,
-            "applied": False,
-            "status": "patch_not_applied",
+
+            "applied":
+                False,
+
+            "status":
+                "patch_not_applied",
         }
 
     APP_FILE.write_text(
@@ -843,16 +1114,57 @@ async def apply_fix_node(
         encoding="utf-8",
     )
 
+    # --------------------------------------------------------
+    # IMPORTANT:
+    # Wait for Vite to detect and rebuild App.jsx.
+    # --------------------------------------------------------
+
+    wait_for_vite_rebuild()
+
+    # --------------------------------------------------------
+    # Confirm source was really changed.
+    # --------------------------------------------------------
+
+    current_source = APP_FILE.read_text(
+        encoding="utf-8",
+    )
+
+    if current_source == original_source:
+
+        return {
+            **state,
+
+            "applied":
+                False,
+
+            "status":
+                "patch_not_applied",
+
+            "error":
+                "App.jsx did not change after patch.",
+        }
+
     print(
         f"[PATCH] Applied "
         f"{applied_count} fix(es)."
     )
 
+    print(
+        f"[PATCH] App.jsx size: "
+        f"{len(current_source)} characters"
+    )
+
     return {
         **state,
-        "applied": True,
-        "status": "fix_applied",
-        "error": "",
+
+        "applied":
+            True,
+
+        "status":
+            "fix_applied",
+
+        "error":
+            "",
     }
 
 
@@ -868,9 +1180,28 @@ async def retest_node(
     print("[GRAPH] RETEST AFTER HEALING")
     print("=" * 70)
 
+    before_screenshot = state.get(
+        "before_screenshot"
+    )
+
+    before_hash = state.get(
+        "before_hash"
+    )
+
     try:
 
-        # run_healing_test is async.
+        # ----------------------------------------------------
+        # Wait once more before opening a fresh browser.
+        # ----------------------------------------------------
+
+        wait_for_vite_rebuild()
+
+        # ----------------------------------------------------
+        # IMPORTANT:
+        # run_healing_test() creates a fresh browser
+        # session in navigator.py.
+        # ----------------------------------------------------
+
         result = await run_healing_test(
             state["url"]
         )
@@ -881,8 +1212,7 @@ async def retest_node(
         ):
 
             raise RuntimeError(
-                "Playwright retest returned "
-                "an invalid result."
+                "Playwright retest returned an invalid result."
             )
 
         screenshots = result.get(
@@ -907,6 +1237,64 @@ async def retest_node(
                 "Retest did not produce HTML files."
             )
 
+        # ----------------------------------------------------
+        # Choose a screenshot that is different from BEFORE.
+        # ----------------------------------------------------
+
+        after_screenshot = (
+            choose_retest_screenshot(
+                screenshots,
+                before_screenshot,
+            )
+        )
+
+        after_html = (
+            get_first_html(
+                screenshots,
+                html_files,
+            )
+        )
+
+        if not after_screenshot:
+
+            raise RuntimeError(
+                "Could not determine AFTER screenshot."
+            )
+
+        after_hash = file_hash(
+            after_screenshot
+        )
+
+        # ----------------------------------------------------
+        # Detect exact same file/path.
+        # ----------------------------------------------------
+
+        same_path = False
+
+        if (
+            before_screenshot
+            and after_screenshot
+        ):
+
+            same_path = (
+                Path(
+                    before_screenshot
+                ).resolve()
+                == Path(
+                    after_screenshot
+                ).resolve()
+            )
+
+        # ----------------------------------------------------
+        # Detect identical binary screenshot.
+        # ----------------------------------------------------
+
+        same_hash = (
+            bool(before_hash)
+            and bool(after_hash)
+            and before_hash == after_hash
+        )
+
         print(
             f"[RETEST] Screenshots: "
             f"{len(screenshots)}"
@@ -917,16 +1305,113 @@ async def retest_node(
             f"{len(html_files)}"
         )
 
+        print(
+            f"[BEFORE] "
+            f"{before_screenshot}"
+        )
+
+        print(
+            f"[AFTER]  "
+            f"{after_screenshot}"
+        )
+
+        print(
+            f"[BEFORE HASH] "
+            f"{before_hash[:16] if before_hash else 'N/A'}..."
+        )
+
+        print(
+            f"[AFTER HASH]  "
+            f"{after_hash[:16] if after_hash else 'N/A'}..."
+        )
+
+        print(
+            f"[SAME PATH] "
+            f"{same_path}"
+        )
+
+        print(
+            f"[SAME HASH] "
+            f"{same_hash}"
+        )
+
+        # ----------------------------------------------------
+        # If same path, this is definitely invalid.
+        # ----------------------------------------------------
+
+        if same_path:
+
+            raise RuntimeError(
+                "AFTER screenshot points to the same file "
+                "as BEFORE screenshot."
+            )
+
+        # ----------------------------------------------------
+        # Same hash is suspicious.
+        #
+        # We do NOT immediately fail because the UI may
+        # legitimately remain visually identical even when
+        # the source changed.
+        #
+        # Verification will decide whether the issue remains.
+        # ----------------------------------------------------
+
+        if same_hash:
+
+            print(
+                "[WARNING] BEFORE and AFTER screenshot "
+                "binary hashes are identical."
+            )
+
+            print(
+                "[WARNING] The browser may not have "
+                "rendered the updated React source."
+            )
+
         return {
             **state,
-            "screenshots": screenshots,
+
+            # Current retest result is used by verification.
+            "screenshots":
+                screenshots,
+
             "html_files": [
-                str(path)
+                str(
+                    path
+                )
                 for path in html_files
             ],
-            "retest_failed": False,
-            "status": "retested",
-            "error": "",
+
+            # Preserve original BEFORE.
+            "before_screenshot":
+                before_screenshot,
+
+            "before_html":
+                state.get(
+                    "before_html"
+                ),
+
+            "before_hash":
+                before_hash,
+
+            # New AFTER.
+            "after_screenshot":
+                after_screenshot,
+
+            "after_html":
+                after_html,
+
+            "after_hash":
+                after_hash,
+
+            "retest_failed":
+                False,
+
+            "status":
+                "retested",
+
+            "error":
+                "",
         }
 
     except Exception as exc:
@@ -937,9 +1422,15 @@ async def retest_node(
 
         return {
             **state,
-            "retest_failed": True,
-            "status": "retest_failed",
-            "error": str(exc),
+
+            "retest_failed":
+                True,
+
+            "status":
+                "retest_failed",
+
+            "error":
+                str(exc),
         }
 
 
@@ -952,12 +1443,8 @@ async def verify_node(
 ) -> HealingState:
 
     print("\n" + "=" * 70)
-    print("[GRAPH] VERIFY HEALING")
+    print("[GRAPH] VERIFY AFTER SCREENSHOT")
     print("=" * 70)
-
-    # --------------------------------------------------------
-    # NEVER VERIFY AFTER A FAILED RETEST
-    # --------------------------------------------------------
 
     if state.get(
         "retest_failed",
@@ -966,23 +1453,19 @@ async def verify_node(
 
         return {
             **state,
-            "fixed": False,
-            "status": "verification_failed",
-            "error": state.get(
-                "error",
-                "Retest failed.",
-            ),
+
+            "fixed":
+                False,
+
+            "status":
+                "verification_failed",
+
+            "error":
+                state.get(
+                    "error",
+                    "Retest failed.",
+                ),
         }
-
-    screenshots = state.get(
-        "screenshots",
-        [],
-    )
-
-    html_files = state.get(
-        "html_files",
-        [],
-    )
 
     issues = state.get(
         "issues",
@@ -991,82 +1474,110 @@ async def verify_node(
 
     if not issues:
 
-        analysis = state.get(
-            "analysis",
-            {},
-        )
+        return {
+            **state,
 
-        issues = analysis.get(
-            "issues",
+            "fixed":
+                True,
+
+            "status":
+                "no_issue",
+
+            "verification": {
+                "status":
+                    "no_issue",
+
+                "fixed":
+                    True,
+            },
+        }
+
+    # --------------------------------------------------------
+    # CRITICAL:
+    # Verify the AFTER screenshot.
+    # --------------------------------------------------------
+
+    after_screenshot = state.get(
+        "after_screenshot"
+    )
+
+    after_html = state.get(
+        "after_html"
+    )
+
+    if not after_screenshot:
+
+        return {
+            **state,
+
+            "fixed":
+                False,
+
+            "status":
+                "verification_failed",
+
+            "error":
+                "AFTER screenshot is missing.",
+        }
+
+    if not after_html:
+
+        # Try to recover HTML from retest result.
+        screenshots = state.get(
+            "screenshots",
             [],
         )
 
-    if not screenshots:
-
-        return {
-            **state,
-            "fixed": False,
-            "status": "verification_failed",
-            "error": (
-                "No screenshot available "
-                "for verification."
-            ),
-        }
-
-    try:
-
-        screenshot = get_screenshot_path(
-            screenshots[0]
+        html_files = state.get(
+            "html_files",
+            [],
         )
 
-        html = get_html_path(
-            screenshots[0],
-            html_files,
-        )
+        try:
 
-    except Exception as exc:
+            after_html = get_html_path(
+                screenshots[0],
+                html_files,
+            )
 
-        return {
-            **state,
-            "fixed": False,
-            "status": "verification_failed",
-            "error": str(exc),
-        }
+        except Exception as exc:
 
-    # --------------------------------------------------------
-    # NO ISSUE
-    # --------------------------------------------------------
+            return {
+                **state,
 
-    if not issues:
+                "fixed":
+                    False,
 
-        return {
-            **state,
-            "fixed": True,
-            "status": "no_issue",
-            "verification": {
-                "status": "no_issue",
-                "fixed": True,
-            },
-        }
+                "status":
+                    "verification_failed",
+
+                "error":
+                    f"AFTER HTML is missing: {exc}",
+            }
+
+    print(
+        f"[VERIFY] BEFORE: "
+        f"{state.get('before_screenshot')}"
+    )
+
+    print(
+        f"[VERIFY] AFTER:  "
+        f"{after_screenshot}"
+    )
+
+    print(
+        f"[VERIFY] AFTER HTML: "
+        f"{after_html}"
+    )
 
     try:
 
         issue = issues[0]
 
-        print(
-            f"[VERIFY] Screenshot: "
-            f"{screenshot}"
-        )
-
-        print(
-            f"[VERIFY] HTML: "
-            f"{html}"
-        )
-
         verification = await asyncio.to_thread(
             verify_healing,
-            screenshot,
-            html,
+            after_screenshot,
+            after_html,
             issue,
         )
 
@@ -1076,18 +1587,14 @@ async def verify_node(
         ):
 
             verification = {
-                "status": "unknown",
-                "fixed": bool(
-                    verification
-                ),
-            }
+                "status":
+                    "unknown",
 
-        status = str(
-            verification.get(
-                "status",
-                "",
-            )
-        ).lower()
+                "fixed":
+                    bool(
+                        verification
+                    ),
+            }
 
         fixed = bool(
             verification.get(
@@ -1096,17 +1603,23 @@ async def verify_node(
             )
         )
 
+        status = str(
+            verification.get(
+                "status",
+                "",
+            )
+        ).lower()
+
         if status in {
             "fixed",
             "passed",
-            "success",
             "verified",
         }:
 
             fixed = True
 
         # ----------------------------------------------------
-        # SOURCE VALIDATION
+        # Ensure source still exists.
         # ----------------------------------------------------
 
         if not APP_FILE.exists():
@@ -1115,7 +1628,9 @@ async def verify_node(
 
             verification[
                 "source_check"
-            ] = "Source file missing."
+            ] = (
+                "Source file missing."
+            )
 
         else:
 
@@ -1129,19 +1644,44 @@ async def verify_node(
 
                 verification[
                     "source_check"
-                ] = "Source file is empty."
+                ] = (
+                    "Source file is empty."
+                )
 
             else:
 
                 verification[
                     "source_check"
                 ] = (
-                    "Source file exists "
-                    "and is not empty."
+                    "Source file exists and "
+                    "is not empty."
                 )
 
+        verification[
+            "before_screenshot"
+        ] = state.get(
+            "before_screenshot"
+        )
+
+        verification[
+            "after_screenshot"
+        ] = after_screenshot
+
+        verification[
+            "before_hash"
+        ] = state.get(
+            "before_hash"
+        )
+
+        verification[
+            "after_hash"
+        ] = state.get(
+            "after_hash"
+        )
+
         print(
-            f"[VERIFY] Fixed: {fixed}"
+            f"[VERIFY] Fixed: "
+            f"{fixed}"
         )
 
         print(
@@ -1151,14 +1691,24 @@ async def verify_node(
 
         return {
             **state,
-            "verification": verification,
-            "fixed": fixed,
+
+            "after_html":
+                after_html,
+
+            "verification":
+                verification,
+
+            "fixed":
+                fixed,
+
             "status": (
                 "verified"
                 if fixed
                 else "verification_failed"
             ),
-            "error": "",
+
+            "error":
+                "",
         }
 
     except Exception as exc:
@@ -1169,9 +1719,15 @@ async def verify_node(
 
         return {
             **state,
-            "fixed": False,
-            "status": "verification_failed",
-            "error": str(exc),
+
+            "fixed":
+                False,
+
+            "status":
+                "verification_failed",
+
+            "error":
+                str(exc),
         }
 
 
@@ -1199,23 +1755,21 @@ async def publish_node(
 
         return {
             **state,
-            "status": "not_published",
+
+            "status":
+                "not_published",
         }
 
-    # Do not create a PR for a clean application.
     if not state.get(
         "issues",
         [],
     ):
 
-        print(
-            "[GITHUB] Skipped because "
-            "no issue was detected."
-        )
-
         return {
             **state,
-            "status": "no_issue",
+
+            "status":
+                "no_issue",
         }
 
     try:
@@ -1225,7 +1779,8 @@ async def publish_node(
         )
 
         print(
-            f"[GITHUB] Result: {result}"
+            f"[GITHUB] Result: "
+            f"{result}"
         )
 
         if isinstance(
@@ -1238,15 +1793,24 @@ async def publish_node(
         else:
 
             github_result = {
-                "status": "published",
-                "result": str(result),
+                "status":
+                    "published",
+
+                "result":
+                    str(result),
             }
 
         return {
             **state,
-            "github_result": github_result,
-            "status": "published",
-            "error": "",
+
+            "github_result":
+                github_result,
+
+            "status":
+                "published",
+
+            "error":
+                "",
         }
 
     except Exception as exc:
@@ -1257,17 +1821,25 @@ async def publish_node(
 
         return {
             **state,
+
             "github_result": {
-                "status": "error",
-                "error": str(exc),
+                "status":
+                    "error",
+
+                "error":
+                    str(exc),
             },
-            "status": "github_failed",
-            "error": str(exc),
+
+            "status":
+                "github_failed",
+
+            "error":
+                str(exc),
         }
 
 
 # ============================================================
-# ROUTING FUNCTIONS
+# ROUTING
 # ============================================================
 
 def route_after_capture(
@@ -1293,14 +1865,12 @@ def route_after_analyze(
 
         return "end"
 
-    issues = state.get(
+    if not state.get(
         "issues",
         [],
-    )
+    ):
 
-    if not issues:
-
-        return "verify"
+        return "end"
 
     return "extract_fix"
 
@@ -1316,7 +1886,7 @@ def route_after_apply(
 
         return "retest"
 
-    return "verify"
+    return "retry"
 
 
 def route_after_retest(
@@ -1337,33 +1907,18 @@ def route_after_verify(
     state: HealingState,
 ) -> str:
 
-    # --------------------------------------------------------
-    # NO ISSUE → END
-    # --------------------------------------------------------
-
-    if state.get(
-        "status"
-    ) == "no_issue":
-
-        return "end"
-
-    # --------------------------------------------------------
-    # VERIFIED → GITHUB
-    # --------------------------------------------------------
-
-    if state.get(
-        "fixed",
-        False,
-    ) and state.get(
-        "issues",
-        [],
+    if (
+        state.get(
+            "fixed",
+            False,
+        )
+        and state.get(
+            "issues",
+            [],
+        )
     ):
 
         return "publish"
-
-    # --------------------------------------------------------
-    # RETRY
-    # --------------------------------------------------------
 
     attempt = state.get(
         "attempt",
@@ -1415,29 +1970,59 @@ def retry_node(
     return {
         **state,
 
-        "attempt": next_attempt,
+        "attempt":
+            next_attempt,
 
-        "status": "retrying",
+        "status":
+            "retrying",
 
-        "screenshots": [],
+        "screenshots":
+            [],
 
-        "html_files": [],
+        "html_files":
+            [],
 
-        "analysis": {},
+        "before_screenshot":
+            None,
 
-        "issues": [],
+        "after_screenshot":
+            None,
 
-        "fixes": [],
+        "before_html":
+            None,
 
-        "applied": False,
+        "after_html":
+            None,
 
-        "retest_failed": False,
+        "before_hash":
+            None,
 
-        "fixed": False,
+        "after_hash":
+            None,
 
-        "verification": {},
+        "analysis":
+            {},
 
-        "error": "",
+        "issues":
+            [],
+
+        "fixes":
+            [],
+
+        "applied":
+            False,
+
+        "retest_failed":
+            False,
+
+        "fixed":
+            False,
+
+        "verification":
+            {},
+
+        "error":
+            "",
     }
 
 
@@ -1504,34 +2089,39 @@ def build_healing_graph():
     )
 
     # --------------------------------------------------------
-    # CAPTURE → ANALYZE
+    # CAPTURE
     # --------------------------------------------------------
 
     graph.add_conditional_edges(
         "capture",
         route_after_capture,
         {
-            "analyze": "analyze",
-            "end": END,
+            "analyze":
+                "analyze",
+
+            "end":
+                END,
         },
     )
 
     # --------------------------------------------------------
-    # ANALYZE → FIX / VERIFY
+    # ANALYZE
     # --------------------------------------------------------
 
     graph.add_conditional_edges(
         "analyze",
         route_after_analyze,
         {
-            "extract_fix": "extract_fix",
-            "verify": "verify",
-            "end": END,
+            "extract_fix":
+                "extract_fix",
+
+            "end":
+                END,
         },
     )
 
     # --------------------------------------------------------
-    # EXTRACT → APPLY
+    # EXTRACT
     # --------------------------------------------------------
 
     graph.add_edge(
@@ -1540,47 +2130,58 @@ def build_healing_graph():
     )
 
     # --------------------------------------------------------
-    # APPLY → RETEST / VERIFY
+    # APPLY
     # --------------------------------------------------------
 
     graph.add_conditional_edges(
         "apply_fix",
         route_after_apply,
         {
-            "retest": "retest",
-            "verify": "verify",
+            "retest":
+                "retest",
+
+            "retry":
+                "retry",
         },
     )
 
     # --------------------------------------------------------
-    # RETEST → VERIFY / RETRY
+    # RETEST
     # --------------------------------------------------------
 
     graph.add_conditional_edges(
         "retest",
         route_after_retest,
         {
-            "verify": "verify",
-            "retry": "retry",
+            "verify":
+                "verify",
+
+            "retry":
+                "retry",
         },
     )
 
     # --------------------------------------------------------
-    # VERIFY → PUBLISH / RETRY / END
+    # VERIFY
     # --------------------------------------------------------
 
     graph.add_conditional_edges(
         "verify",
         route_after_verify,
         {
-            "publish": "publish",
-            "retry": "retry",
-            "end": END,
+            "publish":
+                "publish",
+
+            "retry":
+                "retry",
+
+            "end":
+                END,
         },
     )
 
     # --------------------------------------------------------
-    # RETRY → FRESH CAPTURE
+    # RETRY
     # --------------------------------------------------------
 
     graph.add_edge(
@@ -1589,7 +2190,7 @@ def build_healing_graph():
     )
 
     # --------------------------------------------------------
-    # PUBLISH → END
+    # PUBLISH
     # --------------------------------------------------------
 
     graph.add_edge(
@@ -1618,7 +2219,7 @@ async def run_healing_agent(
 
     print("\n")
     print("=" * 70)
-    print("OMNISIGHT WEEK 4 SELF-HEALING AGENT")
+    print("OMNISIGHT SELF-HEALING AGENT")
     print("=" * 70)
 
     print(
@@ -1652,35 +2253,69 @@ async def run_healing_agent(
     print("=" * 70)
 
     initial_state: HealingState = {
-        "url": url,
 
-        "attempt": 1,
+        "url":
+            url,
 
-        "max_attempts": max_attempts,
+        "attempt":
+            1,
 
-        "screenshots": [],
+        "max_attempts":
+            max_attempts,
 
-        "html_files": [],
+        "screenshots":
+            [],
 
-        "analysis": {},
+        "html_files":
+            [],
 
-        "issues": [],
+        "before_screenshot":
+            None,
 
-        "fixes": [],
+        "after_screenshot":
+            None,
 
-        "applied": False,
+        "before_html":
+            None,
 
-        "retest_failed": False,
+        "after_html":
+            None,
 
-        "fixed": False,
+        "before_hash":
+            None,
 
-        "verification": {},
+        "after_hash":
+            None,
 
-        "github_result": {},
+        "analysis":
+            {},
 
-        "status": "starting",
+        "issues":
+            [],
 
-        "error": "",
+        "fixes":
+            [],
+
+        "applied":
+            False,
+
+        "retest_failed":
+            False,
+
+        "fixed":
+            False,
+
+        "verification":
+            {},
+
+        "github_result":
+            {},
+
+        "status":
+            "starting",
+
+        "error":
+            "",
     }
 
     try:
@@ -1688,7 +2323,8 @@ async def run_healing_agent(
         final_state = await healing_graph.ainvoke(
             initial_state,
             config={
-                "recursion_limit": 50,
+                "recursion_limit":
+                    50,
             },
         )
 
@@ -1732,6 +2368,26 @@ async def run_healing_agent(
         )
 
         print(
+            f"[BEFORE]       "
+            f"{final_state.get('before_screenshot')}"
+        )
+
+        print(
+            f"[AFTER]        "
+            f"{final_state.get('after_screenshot')}"
+        )
+
+        print(
+            f"[BEFORE HASH]  "
+            f"{str(final_state.get('before_hash', ''))[:16]}..."
+        )
+
+        print(
+            f"[AFTER HASH]   "
+            f"{str(final_state.get('after_hash', ''))[:16]}..."
+        )
+
+        print(
             f"[GITHUB]       "
             f"{final_state.get('github_result')}"
         )
@@ -1757,8 +2413,12 @@ async def run_healing_agent(
 
         return {
             **initial_state,
-            "status": "error",
-            "error": str(exc),
+
+            "status":
+                "error",
+
+            "error":
+                str(exc),
         }
 
 

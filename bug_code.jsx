@@ -119,7 +119,7 @@ function App() {
 
                 <button
                   onClick={() => addToCart(product)}
-                  className="add-to-cart bg-red-600 text-white px-8 py-4 rounded-lg shadow-xl font-bold text-lg whitespace-nowrap border-4 border-white"
+                  className="add-to-cart absolute bottom-0 left-1/2 -translate-x-1/2 translate-y-1/2 bg-red-600 text-white px-8 py-4 rounded-lg shadow-xl font-bold text-lg whitespace-nowrap border-4 border-white"
                 >
                   Add to Cart
                 </button>

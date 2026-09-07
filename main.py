@@ -6,6 +6,7 @@ from typing import Any
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from backend.browser.navigator import run_healing_test
@@ -26,8 +27,20 @@ MOCK_STORE_URL = "http://localhost:5173"
 DASHBOARD_URL = "http://localhost:5174"
 API_URL = "http://localhost:8000"
 
-# OmniSight source file that the AI is allowed to analyze/patch
 APP_FILE = Path("demo-store/src/App.jsx")
+
+SCREENSHOTS_DIR = Path("screenshots")
+OUTPUTS_DIR = Path("outputs")
+
+SCREENSHOTS_DIR.mkdir(
+    parents=True,
+    exist_ok=True,
+)
+
+OUTPUTS_DIR.mkdir(
+    parents=True,
+    exist_ok=True,
+)
 
 
 # ============================================================
@@ -38,6 +51,23 @@ app = FastAPI(
     title="OmniSight API",
     description="Multimodal UI Self-Healing & RPA Agent",
     version=APP_VERSION,
+)
+
+
+# ============================================================
+# STATIC FILES
+# ============================================================
+
+# This allows the React dashboard to display:
+#
+# http://localhost:8000/screenshots/example.png
+#
+app.mount(
+    "/screenshots",
+    StaticFiles(
+        directory=str(SCREENSHOTS_DIR)
+    ),
+    name="screenshots",
 )
 
 
@@ -64,13 +94,25 @@ app.add_middleware(
 
 LATEST_HEALING_RESULT: dict[str, Any] = {
     "status": "not_started",
+    "attempt": 0,
+
     "issues": [],
     "fixes": [],
+
     "screenshots": [],
     "html_files": [],
+
+    "before_screenshot": None,
+    "after_screenshot": None,
+
     "analysis": {},
     "verification": {},
     "github_result": {},
+
+    "applied": False,
+    "fixed": False,
+
+    "error": None,
 }
 
 
@@ -96,16 +138,6 @@ class VisionRequest(BaseModel):
 
 
 class FixRequest(BaseModel):
-    """
-    Only screenshot + HTML are required.
-
-    OmniSight automatically:
-    1. Reads App.jsx
-    2. Runs VLM analysis
-    3. Gets detected issue
-    4. Generates source-code fix
-    """
-
     screenshot_path: str
     html_path: str
 
@@ -121,10 +153,19 @@ class DashboardActionRequest(BaseModel):
 # ============================================================
 
 
-def normalize_paths(items: Any) -> list[str]:
-    """
-    Convert Path objects/different result formats into strings.
-    """
+def normalize_screenshot_path(
+    path: Any,
+) -> str | None:
+
+    if not path:
+        return None
+
+    return str(path)
+
+
+def normalize_paths(
+    items: Any,
+) -> list[str]:
 
     if not items:
         return []
@@ -135,44 +176,117 @@ def normalize_paths(items: Any) -> list[str]:
 
         if isinstance(item, dict):
 
-            screenshot = item.get("screenshot")
+            screenshot = (
+                item.get("screenshot")
+                or item.get("path")
+                or item.get("file")
+            )
 
             if screenshot:
-                result.append(str(screenshot))
+                result.append(
+                    str(screenshot)
+                )
 
         else:
-            result.append(str(item))
+
+            result.append(
+                str(item)
+            )
 
     return result
 
 
-def normalize_issues(issues: Any, screenshot_path: str) -> list[dict[str, Any]]:
-    """
-    Convert VLM issue output into a predictable list of dictionaries.
-    """
+def normalize_issues(
+    issues: Any,
+    screenshot_path: str,
+) -> list[dict[str, Any]]:
 
     if not issues:
         return []
 
-    normalized: list[dict[str, Any]] = []
+    normalized: list[
+        dict[str, Any]
+    ] = []
 
-    for issue in issues:
+    for index, issue in enumerate(
+        issues,
+        start=1,
+    ):
 
-        if isinstance(issue, dict):
+        if isinstance(
+            issue,
+            dict,
+        ):
+
             item = dict(issue)
+
         else:
+
             item = {
                 "description": str(issue)
             }
+
+        item.setdefault(
+            "id",
+            str(index),
+        )
 
         item.setdefault(
             "screenshot",
             screenshot_path,
         )
 
-        normalized.append(item)
+        normalized.append(
+            item
+        )
 
     return normalized
+
+
+def get_first_screenshot(
+    screenshots: Any,
+) -> str | None:
+
+    if not screenshots:
+        return None
+
+    first = screenshots[0]
+
+    if isinstance(
+        first,
+        dict,
+    ):
+
+        return (
+            first.get("screenshot")
+            or first.get("path")
+            or first.get("file")
+        )
+
+    return str(first)
+
+
+def get_last_screenshot(
+    screenshots: Any,
+) -> str | None:
+
+    if not screenshots:
+        return None
+
+    last = screenshots[-1]
+
+    if isinstance(
+        last,
+        dict,
+    ):
+
+        return (
+            last.get("screenshot")
+            or last.get("path")
+            or last.get("file")
+        )
+
+    return str(last)
 
 
 # ============================================================
@@ -185,7 +299,9 @@ async def root():
 
     return {
         "project": "OmniSight",
-        "description": "Multimodal UI Self-Healing & RPA Agent",
+        "description": (
+            "Multimodal UI Self-Healing & RPA Agent"
+        ),
         "version": APP_VERSION,
         "status": "running",
         "services": {
@@ -193,6 +309,9 @@ async def root():
             "dashboard": DASHBOARD_URL,
             "api": API_URL,
             "docs": f"{API_URL}/docs",
+            "screenshots": (
+                f"{API_URL}/screenshots"
+            ),
         },
     }
 
@@ -219,24 +338,18 @@ async def health():
 
 
 @app.post("/navigation/run")
-async def navigation_run(request: HealingRequest):
-    """
-    Run Playwright browser automation.
-
-    Captures:
-    - screenshots
-    - HTML
-    - responsive pages
-    """
+async def navigation_run(
+    request: HealingRequest,
+):
 
     try:
 
         print("\n" + "=" * 70)
-        print("[FASTAPI] Starting browser navigation...")
+        print(
+            "[FASTAPI] Starting browser navigation..."
+        )
         print("=" * 70)
 
-        # run_healing_test is ASYNC.
-        # Therefore it must be awaited directly.
         result = await run_healing_test(
             request.url
         )
@@ -249,7 +362,9 @@ async def navigation_run(request: HealingRequest):
 
     except Exception as exc:
 
-        print(f"[NAVIGATION ERROR] {exc}")
+        print(
+            f"[NAVIGATION ERROR] {exc}"
+        )
 
         return {
             "status": "error",
@@ -265,15 +380,16 @@ async def navigation_run(request: HealingRequest):
 
 
 @app.post("/vision/analyze")
-async def vision_analyze(request: VisionRequest):
-    """
-    Analyze screenshot + HTML using the VLM.
-    """
+async def vision_analyze(
+    request: VisionRequest,
+):
 
     try:
 
         print("\n" + "=" * 70)
-        print("[FASTAPI] Starting VLM analysis...")
+        print(
+            "[FASTAPI] Starting VLM analysis..."
+        )
         print("=" * 70)
 
         result = await asyncio.to_thread(
@@ -289,7 +405,9 @@ async def vision_analyze(request: VisionRequest):
 
     except Exception as exc:
 
-        print(f"[VISION ERROR] {exc}")
+        print(
+            f"[VISION ERROR] {exc}"
+        )
 
         return {
             "status": "error",
@@ -304,25 +422,21 @@ async def vision_analyze(request: VisionRequest):
 
 
 @app.post("/actions/extract-fixes")
-async def extract_fixes(request: FixRequest):
-    """
-    Automatically:
-
-    1. Read App.jsx
-    2. Analyze screenshot + HTML
-    3. Extract detected UI issue
-    4. Generate source-code fix
-    """
+async def extract_fixes(
+    request: FixRequest,
+):
 
     try:
 
         print("\n" + "=" * 70)
-        print("[FASTAPI] AUTOMATIC FIX GENERATION")
+        print(
+            "[FASTAPI] AUTOMATIC FIX GENERATION"
+        )
         print("=" * 70)
 
         # ----------------------------------------------------
         # STEP 1
-        # Verify source file
+        # VERIFY SOURCE
         # ----------------------------------------------------
 
         if not APP_FILE.exists():
@@ -351,7 +465,7 @@ async def extract_fixes(request: FixRequest):
 
         # ----------------------------------------------------
         # STEP 2
-        # Run VLM analysis automatically
+        # VLM ANALYSIS
         # ----------------------------------------------------
 
         print(
@@ -364,14 +478,20 @@ async def extract_fixes(request: FixRequest):
             request.html_path,
         )
 
-        if not isinstance(analysis, dict):
+        if not isinstance(
+            analysis,
+            dict,
+        ):
 
             raise ValueError(
-                "VLM analysis returned an invalid response."
+                "VLM analysis returned invalid response."
             )
 
         issues = normalize_issues(
-            analysis.get("issues", []),
+            analysis.get(
+                "issues",
+                [],
+            ),
             request.screenshot_path,
         )
 
@@ -381,7 +501,7 @@ async def extract_fixes(request: FixRequest):
 
         # ----------------------------------------------------
         # STEP 3
-        # No issue
+        # NO ISSUE
         # ----------------------------------------------------
 
         if not issues:
@@ -395,17 +515,21 @@ async def extract_fixes(request: FixRequest):
                     ),
                     "issues": [],
                     "fixes": [],
-                    "source_file": str(APP_FILE),
+                    "source_file": str(
+                        APP_FILE
+                    ),
                     "analysis": analysis,
                 },
             }
 
         # ----------------------------------------------------
         # STEP 4
-        # Generate fixes for detected issues
+        # GENERATE FIXES
         # ----------------------------------------------------
 
-        all_fixes: list[dict[str, Any]] = []
+        all_fixes: list[
+            dict[str, Any]
+        ] = []
 
         for index, issue in enumerate(
             issues,
@@ -413,14 +537,26 @@ async def extract_fixes(request: FixRequest):
         ):
 
             print(
-                f"[FIX] Generating fix {index}/{len(issues)}..."
+                f"[FIX] Generating fix "
+                f"{index}/{len(issues)}..."
             )
+
+            # IMPORTANT:
+            #
+            # Current generate_healing_fix()
+            # accepts:
+            #
+            #   screenshot
+            #   issue
+            #   source_code
+            #
+            # NOT four arguments.
+            #
 
             fix_result = await asyncio.to_thread(
                 generate_healing_fix,
-                issue,
                 request.screenshot_path,
-                request.html_path,
+                issue,
                 source_code,
             )
 
@@ -428,18 +564,22 @@ async def extract_fixes(request: FixRequest):
                 fix_result,
                 dict,
             ):
+
                 print(
                     "[FIX] Invalid fix response."
                 )
+
                 continue
 
             # ------------------------------------------------
-            # Support multiple fixes
+            # MULTIPLE FIXES
             # ------------------------------------------------
 
-            generated_fixes = fix_result.get(
-                "fixes",
-                [],
+            generated_fixes = (
+                fix_result.get(
+                    "fixes",
+                    [],
+                )
             )
 
             if isinstance(
@@ -473,6 +613,7 @@ async def extract_fixes(request: FixRequest):
                         old
                         and new
                         and old != new
+                        and old in source_code
                     ):
 
                         all_fixes.append(
@@ -484,7 +625,7 @@ async def extract_fixes(request: FixRequest):
                         )
 
             # ------------------------------------------------
-            # Support single old/new response
+            # SINGLE FIX
             # ------------------------------------------------
 
             else:
@@ -507,6 +648,7 @@ async def extract_fixes(request: FixRequest):
                     old
                     and new
                     and old != new
+                    and old in source_code
                 ):
 
                     all_fixes.append(
@@ -519,11 +661,12 @@ async def extract_fixes(request: FixRequest):
 
         # ----------------------------------------------------
         # STEP 5
-        # Return complete result
+        # RETURN
         # ----------------------------------------------------
 
         print(
-            f"[FIX] Valid fixes generated: {len(all_fixes)}"
+            f"[FIX] Valid fixes generated: "
+            f"{len(all_fixes)}"
         )
 
         return {
@@ -534,7 +677,9 @@ async def extract_fixes(request: FixRequest):
                     if all_fixes
                     else "fix_generation_failed"
                 ),
-                "source_file": str(APP_FILE),
+                "source_file": str(
+                    APP_FILE
+                ),
                 "issues": issues,
                 "fixes": all_fixes,
                 "analysis": analysis,
@@ -560,11 +705,13 @@ async def extract_fixes(request: FixRequest):
 
 @app.post("/webhook")
 async def webhook(
-    request: WebhookRequest
+    request: WebhookRequest,
 ):
 
     print("\n" + "=" * 70)
-    print("[WEBHOOK] CI/CD EVENT RECEIVED")
+    print(
+        "[WEBHOOK] CI/CD EVENT RECEIVED"
+    )
     print("=" * 70)
 
     print(
@@ -591,42 +738,237 @@ async def webhook(
 
 
 # ============================================================
-# WEEK 3 + WEEK 4
 # COMPLETE SELF-HEALING PIPELINE
 # ============================================================
 
 
 @app.post("/healing/run")
 async def healing_run(
-    request: HealingRequest
+    request: HealingRequest,
 ):
 
     global LATEST_HEALING_RESULT
 
     print("\n" + "=" * 70)
-    print("OMNISIGHT HEALING RUN")
+    print(
+        "OMNISIGHT HEALING RUN"
+    )
     print("=" * 70)
 
     try:
 
+        # ----------------------------------------------------
+        # RESET STATE
+        # ----------------------------------------------------
+
         LATEST_HEALING_RESULT = {
             "status": "running",
+            "attempt": 0,
+
             "issues": [],
             "fixes": [],
+
             "screenshots": [],
             "html_files": [],
+
+            "before_screenshot": None,
+            "after_screenshot": None,
+
             "analysis": {},
             "verification": {},
             "github_result": {},
+
+            "applied": False,
+            "fixed": False,
+
+            "error": None,
         }
+
+        # ----------------------------------------------------
+        # RUN LANGGRAPH AGENT
+        # ----------------------------------------------------
 
         result = await run_healing_agent(
             url=request.url,
             max_attempts=request.max_attempts,
         )
 
-        LATEST_HEALING_RESULT = dict(
-            result
+        if not isinstance(
+            result,
+            dict,
+        ):
+
+            raise ValueError(
+                "Healing agent returned invalid result."
+            )
+
+        # ----------------------------------------------------
+        # NORMALIZE RESULT
+        # ----------------------------------------------------
+
+        screenshots = result.get(
+            "screenshots",
+            [],
+        )
+
+        screenshots = (
+            screenshots
+            if isinstance(
+                screenshots,
+                list,
+            )
+            else []
+        )
+
+        html_files = result.get(
+            "html_files",
+            [],
+        )
+
+        html_files = (
+            html_files
+            if isinstance(
+                html_files,
+                list,
+            )
+            else []
+        )
+
+        issues = result.get(
+            "issues",
+            [],
+        )
+
+        fixes = result.get(
+            "fixes",
+            [],
+        )
+
+        # ----------------------------------------------------
+        # BEFORE SCREENSHOT
+        # ----------------------------------------------------
+
+        before_screenshot = result.get(
+            "before_screenshot"
+        )
+
+        if not before_screenshot:
+            before_screenshot = (
+                get_first_screenshot(
+                    screenshots
+                )
+            )
+
+        # ----------------------------------------------------
+        # AFTER SCREENSHOT
+        # ----------------------------------------------------
+
+        after_screenshot = result.get(
+            "after_screenshot"
+        )
+
+        if not after_screenshot:
+
+            if len(screenshots) >= 2:
+
+                after_screenshot = (
+                    get_last_screenshot(
+                        screenshots
+                    )
+                )
+
+            elif result.get(
+                "fixed",
+                False,
+            ):
+
+                after_screenshot = (
+                    get_last_screenshot(
+                        screenshots
+                    )
+                )
+
+        # ----------------------------------------------------
+        # STORE FINAL STATE
+        # ----------------------------------------------------
+
+        LATEST_HEALING_RESULT = {
+            **result,
+
+            "status": result.get(
+                "status",
+                "completed",
+            ),
+
+            "issues": issues,
+            "fixes": fixes,
+
+            "screenshots": screenshots,
+            "html_files": html_files,
+
+            "before_screenshot":
+                before_screenshot,
+
+            "after_screenshot":
+                after_screenshot,
+
+            "analysis": result.get(
+                "analysis",
+                {},
+            ),
+
+            "verification": result.get(
+                "verification",
+                {},
+            ),
+
+            "github_result": result.get(
+                "github_result",
+                {},
+            ),
+
+            "applied": result.get(
+                "applied",
+                False,
+            ),
+
+            "fixed": result.get(
+                "fixed",
+                False,
+            ),
+
+            "error": result.get(
+                "error"
+            ),
+        }
+
+        print(
+            "\n[HEALING] Pipeline completed."
+        )
+
+        print(
+            f"[HEALING] Issues: "
+            f"{len(issues)}"
+        )
+
+        print(
+            f"[HEALING] Fixes: "
+            f"{len(fixes)}"
+        )
+
+        print(
+            f"[HEALING] Fixed: "
+            f"{result.get('fixed', False)}"
+        )
+
+        print(
+            f"[HEALING] Before: "
+            f"{before_screenshot}"
+        )
+
+        print(
+            f"[HEALING] After: "
+            f"{after_screenshot}"
         )
 
         return {
@@ -666,18 +1008,32 @@ async def healing_status():
             "status",
             "not_started",
         ),
+
         "attempt": LATEST_HEALING_RESULT.get(
             "attempt",
             0,
         ),
+
         "fixed": LATEST_HEALING_RESULT.get(
             "fixed",
             False,
         ),
+
         "applied": LATEST_HEALING_RESULT.get(
             "applied",
             False,
         ),
+
+        "before_screenshot":
+            LATEST_HEALING_RESULT.get(
+                "before_screenshot"
+            ),
+
+        "after_screenshot":
+            LATEST_HEALING_RESULT.get(
+                "after_screenshot"
+            ),
+
         "error": LATEST_HEALING_RESULT.get(
             "error",
             "",
@@ -686,7 +1042,6 @@ async def healing_status():
 
 
 # ============================================================
-# WEEK 4 PART 2
 # OPTIMIZATION STATUS
 # ============================================================
 
@@ -696,29 +1051,42 @@ async def optimization_status():
 
     analysis = LATEST_HEALING_RESULT.get(
         "analysis",
-        {}
+        {},
     )
+
+    if not isinstance(
+        analysis,
+        dict,
+    ):
+        analysis = {}
 
     optimization = analysis.get(
         "optimization",
-        {}
+        {},
     )
+
+    if not isinstance(
+        optimization,
+        dict,
+    ):
+        optimization = {}
 
     return {
         "image_optimization": optimization.get(
             "image",
-            {}
+            {},
         ),
+
         "html_reduction": optimization.get(
             "html",
-            {}
+            {},
         ),
+
         "enabled": True,
     }
 
 
 # ============================================================
-# WEEK 4 PART 1
 # DASHBOARD ISSUES
 # ============================================================
 
@@ -728,29 +1096,59 @@ async def dashboard_issues():
 
     analysis = LATEST_HEALING_RESULT.get(
         "analysis",
-        {}
+        {},
     )
+
+    if not isinstance(
+        analysis,
+        dict,
+    ):
+        analysis = {}
 
     issues = LATEST_HEALING_RESULT.get(
         "issues",
-        []
+        [],
     )
 
     if not issues:
 
         issues = analysis.get(
             "issues",
-            []
+            [],
         )
+
+    if not isinstance(
+        issues,
+        list,
+    ):
+        issues = []
 
     fixes = LATEST_HEALING_RESULT.get(
         "fixes",
-        []
+        [],
     )
+
+    if not isinstance(
+        fixes,
+        list,
+    ):
+        fixes = []
 
     github_result = LATEST_HEALING_RESULT.get(
         "github_result",
-        {}
+        {},
+    )
+
+    before_screenshot = (
+        LATEST_HEALING_RESULT.get(
+            "before_screenshot"
+        )
+    )
+
+    after_screenshot = (
+        LATEST_HEALING_RESULT.get(
+            "after_screenshot"
+        )
     )
 
     dashboard_items = []
@@ -782,7 +1180,39 @@ async def dashboard_issues():
         )
 
         # ----------------------------------------------------
-        # Find matching fix
+        # SCREENSHOTS
+        # ----------------------------------------------------
+
+        item["before_screenshot"] = (
+            before_screenshot
+            or item.get(
+                "before_screenshot"
+            )
+            or item.get(
+                "screenshot"
+            )
+        )
+
+        item["after_screenshot"] = (
+            after_screenshot
+            or item.get(
+                "after_screenshot"
+            )
+        )
+
+        # Keep original screenshot
+        # for backward compatibility.
+
+        if not item.get(
+            "screenshot"
+        ):
+
+            item["screenshot"] = (
+                item["before_screenshot"]
+            )
+
+        # ----------------------------------------------------
+        # MATCH FIX
         # ----------------------------------------------------
 
         matching_fix = None
@@ -797,10 +1227,18 @@ async def dashboard_issues():
 
             fix_issue = fix.get(
                 "issue",
-                {}
+                {},
             )
 
-            if fix_issue == issue:
+            if (
+                fix_issue == issue
+                or fix_issue.get(
+                    "description"
+                )
+                == issue.get(
+                    "description"
+                )
+            ):
 
                 matching_fix = fix
                 break
@@ -812,6 +1250,7 @@ async def dashboard_issues():
                     "old",
                     "",
                 ),
+
                 "new": matching_fix.get(
                     "new",
                     "",
@@ -819,38 +1258,7 @@ async def dashboard_issues():
             }
 
         # ----------------------------------------------------
-        # Screenshot
-        # ----------------------------------------------------
-
-        if "screenshot" not in item:
-
-            screenshots = LATEST_HEALING_RESULT.get(
-                "screenshots",
-                [],
-            )
-
-            if screenshots:
-
-                first = screenshots[0]
-
-                if isinstance(
-                    first,
-                    dict,
-                ):
-
-                    item["screenshot"] = first.get(
-                        "screenshot",
-                        "",
-                    )
-
-                else:
-
-                    item["screenshot"] = str(
-                        first
-                    )
-
-        # ----------------------------------------------------
-        # GitHub
+        # GITHUB
         # ----------------------------------------------------
 
         if isinstance(
@@ -858,12 +1266,16 @@ async def dashboard_issues():
             dict,
         ):
 
-            item["pr_number"] = github_result.get(
-                "pr_number"
+            item["pr_number"] = (
+                github_result.get(
+                    "pr_number"
+                )
             )
 
-            item["pr_url"] = github_result.get(
-                "pr_url"
+            item["pr_url"] = (
+                github_result.get(
+                    "pr_url"
+                )
             )
 
         dashboard_items.append(
@@ -872,11 +1284,25 @@ async def dashboard_issues():
 
     return {
         "status": "success",
-        "count": len(dashboard_items),
-        "issues": dashboard_items,
-        "healing_status": LATEST_HEALING_RESULT.get(
-            "status"
+
+        "count": len(
+            dashboard_items
         ),
+
+        "issues": dashboard_items,
+
+        "healing_status":
+            LATEST_HEALING_RESULT.get(
+                "status"
+            ),
+
+        "before_screenshot":
+            before_screenshot,
+
+        "after_screenshot":
+            after_screenshot,
+
+        "fixes": fixes,
     }
 
 
@@ -890,54 +1316,143 @@ async def dashboard_status():
 
     analysis = LATEST_HEALING_RESULT.get(
         "analysis",
-        {}
+        {},
     )
+
+    if not isinstance(
+        analysis,
+        dict,
+    ):
+        analysis = {}
 
     issues = LATEST_HEALING_RESULT.get(
         "issues",
-        []
+        [],
     )
 
     if not issues:
 
         issues = analysis.get(
             "issues",
-            []
+            [],
         )
+
+    if not isinstance(
+        issues,
+        list,
+    ):
+        issues = []
 
     fixes = LATEST_HEALING_RESULT.get(
         "fixes",
-        []
+        [],
     )
+
+    if not isinstance(
+        fixes,
+        list,
+    ):
+        fixes = []
 
     github_result = LATEST_HEALING_RESULT.get(
         "github_result",
-        {}
+        {},
     )
+
+    if not isinstance(
+        github_result,
+        dict,
+    ):
+        github_result = {}
 
     return {
         "project": "OmniSight",
+
         "version": APP_VERSION,
-        "healing_status": LATEST_HEALING_RESULT.get(
-            "status",
-            "not_started",
-        ),
-        "issues_detected": len(issues),
-        "fixes_generated": len(fixes),
-        "fixed": LATEST_HEALING_RESULT.get(
-            "fixed",
-            False,
-        ),
-        "applied": LATEST_HEALING_RESULT.get(
-            "applied",
-            False,
-        ),
-        "github": github_result,
+
+        "healing_status":
+            LATEST_HEALING_RESULT.get(
+                "status",
+                "not_started",
+            ),
+
+        "attempt":
+            LATEST_HEALING_RESULT.get(
+                "attempt",
+                0,
+            ),
+
+        "issues_detected":
+            len(issues),
+
+        "fixes_generated":
+            len(fixes),
+
+        "issues":
+            issues,
+
+        "fixes":
+            fixes,
+
+        "fixed":
+            LATEST_HEALING_RESULT.get(
+                "fixed",
+                False,
+            ),
+
+        "applied":
+            LATEST_HEALING_RESULT.get(
+                "applied",
+                False,
+            ),
+
+        # ----------------------------------------------------
+        # IMPORTANT FOR DASHBOARD
+        # ----------------------------------------------------
+
+        "before_screenshot":
+            LATEST_HEALING_RESULT.get(
+                "before_screenshot"
+            ),
+
+        "after_screenshot":
+            LATEST_HEALING_RESULT.get(
+                "after_screenshot"
+            ),
+
+        "screenshots":
+            LATEST_HEALING_RESULT.get(
+                "screenshots",
+                [],
+            ),
+
+        "html_files":
+            LATEST_HEALING_RESULT.get(
+                "html_files",
+                [],
+            ),
+
+        "analysis":
+            analysis,
+
+        "verification":
+            LATEST_HEALING_RESULT.get(
+                "verification",
+                {},
+            ),
+
+        "github":
+            github_result,
+
+        "error":
+            LATEST_HEALING_RESULT.get(
+                "error"
+            ),
     }
 
 
 # ============================================================
-# QA APPROVE PR
+# QA APPROVE
 # ============================================================
 
 
@@ -950,7 +1465,7 @@ async def approve_pr(
 
     issues = LATEST_HEALING_RESULT.get(
         "issues",
-        []
+        [],
     )
 
     issue_id = request.issue_id
@@ -971,18 +1486,25 @@ async def approve_pr(
         ) == str(issue_id):
 
             issue["status"] = "approved"
-            issue["qa_decision"] = "approved"
+
+            issue[
+                "qa_decision"
+            ] = "approved"
 
             if request.comment:
 
-                issue["qa_comment"] = (
-                    request.comment
-                )
+                issue[
+                    "qa_comment"
+                ] = request.comment
 
     return {
         "status": "approved",
+
         "issue_id": issue_id,
-        "pr_number": request.pr_number,
+
+        "pr_number":
+            request.pr_number,
+
         "message": (
             "QA approval recorded successfully."
         ),
@@ -990,7 +1512,7 @@ async def approve_pr(
 
 
 # ============================================================
-# QA REJECT PR
+# QA REJECT
 # ============================================================
 
 
@@ -1003,7 +1525,7 @@ async def reject_pr(
 
     issues = LATEST_HEALING_RESULT.get(
         "issues",
-        []
+        [],
     )
 
     issue_id = request.issue_id
@@ -1024,18 +1546,25 @@ async def reject_pr(
         ) == str(issue_id):
 
             issue["status"] = "rejected"
-            issue["qa_decision"] = "rejected"
+
+            issue[
+                "qa_decision"
+            ] = "rejected"
 
             if request.comment:
 
-                issue["qa_comment"] = (
-                    request.comment
-                )
+                issue[
+                    "qa_comment"
+                ] = request.comment
 
     return {
         "status": "rejected",
+
         "issue_id": issue_id,
-        "pr_number": request.pr_number,
+
+        "pr_number":
+            request.pr_number,
+
         "message": (
             "QA rejection recorded successfully."
         ),
@@ -1051,16 +1580,21 @@ async def reject_pr(
 async def startup_event():
 
     print("\n")
-    print("=" * 70)
-    print("OMNISIGHT FASTAPI SERVER")
+
     print("=" * 70)
 
     print(
-        "[PROJECT]   OmniSight"
+        "OMNISIGHT FASTAPI SERVER"
+    )
+
+    print("=" * 70)
+
+    print(
+        f"[PROJECT]   OmniSight"
     )
 
     print(
-        "[VERSION]   4.0.0"
+        f"[VERSION]   {APP_VERSION}"
     )
 
     print(
@@ -1077,6 +1611,10 @@ async def startup_event():
 
     print(
         f"[DOCS]      {API_URL}/docs"
+    )
+
+    print(
+        f"[SCREENSHOT] {API_URL}/screenshots"
     )
 
     print(
