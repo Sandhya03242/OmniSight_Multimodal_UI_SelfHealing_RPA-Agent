@@ -34,7 +34,7 @@ QA Dashboard
 
 Watch the complete OmniSight demonstration:
 
-**[▶️ Watch OmniSight Demo](./demo/Omnisight.mp4)**
+**[▶️ Watch OmniSight Demo](https://drive.google.com/file/d/1q1w2RPWcTtrTvETaApjmATwzh6ljq7YT/view?usp=sharing)**
 
 The demo demonstrates the complete self-healing workflow:
 
