@@ -30,7 +30,45 @@ QA Dashboard
 
 ---
 
-## 🚀 Features
+# 🎥 Demo Video
+
+Watch the complete OmniSight demonstration:
+
+**[▶️ Watch OmniSight Demo](./demo/Omnsight.mp4)**
+
+The demo demonstrates the complete self-healing workflow:
+
+```text
+UI Bug
+  ↓
+Playwright Capture
+  ↓
+Screenshot + HTML
+  ↓
+Image + HTML Optimization
+  ↓
+Qwen VLM Analysis
+  ↓
+UI Issue Detection
+  ↓
+AI Fix Generation
+  ↓
+Source Code Modification
+  ↓
+Retesting
+  ↓
+Verification
+  ↓
+GitHub Integration
+  ↓
+QA Dashboard
+```
+
+> **Demo file:** `demo/Omnsight.mp4`
+
+---
+
+# 🚀 Features
 
 * Browser automation with Playwright
 * Responsive screenshot capture
@@ -98,11 +136,13 @@ Large screenshots are optimized before being sent to the VLM.
 
 ```text
 Original Screenshot
+
 1440 × 1132
        ↓
 Anomaly Detection
        ↓
 Focused Crop
+
 1024 × 796
        ↓
 Qwen VLM
@@ -128,6 +168,7 @@ Example:
 
 ```text
 Original HTML
+
 17,645 characters
        ↓
 HTML Reduction
@@ -211,7 +252,7 @@ After applying a fix, OmniSight performs another analysis.
 ```text
 Issue still exists
         ↓
-     Retry
+      Retry
 ```
 
 or:
@@ -219,7 +260,7 @@ or:
 ```text
 Issue resolved
         ↓
-     Publish
+      Publish
 ```
 
 This prevents blindly accepting an AI-generated modification.
@@ -370,7 +411,7 @@ Implemented:
 # 📁 Project Structure
 
 ```text
-OmniSight/
+OmniSight_Multimodal_UI_SelfHealing_RPA-Agent/
 │
 ├── main.py
 ├── graph.py
@@ -390,6 +431,9 @@ OmniSight/
 │   ├── *.html
 │   └── chunks/
 │       └── *.png
+│
+├── demo/
+│   └── Omnsight.mp4
 │
 ├── demo-store/
 │   ├── src/
@@ -461,6 +505,8 @@ GITHUB_HEALING_BRANCH=main
 
 **Never commit `.env` or GitHub tokens to GitHub.**
 
+Make sure `.env` is included in `.gitignore`.
+
 ---
 
 # ▶️ Running the Project
@@ -468,6 +514,8 @@ GITHUB_HEALING_BRANCH=main
 OmniSight uses three applications.
 
 ## 1. Start Mock Store
+
+Open a terminal:
 
 ```bash
 cd demo-store
@@ -485,10 +533,10 @@ http://localhost:5173
 
 ## 2. Start FastAPI
 
-From the OmniSight root:
+From the OmniSight root directory:
 
 ```bash
-uv run uvicorn main:app --reload --port 8000
+uv run python -m uvicorn main:app --reload --port 8000
 ```
 
 API:
@@ -992,14 +1040,14 @@ Reduced HTML:
                                │
                                ▼
                     ┌─────────────────────┐
-                    │      FastAPI        │
-                    │   CI/CD Gateway     │
+                    │       FastAPI       │
+                    │    CI/CD Gateway    │
                     └──────────┬──────────┘
                                │
                                ▼
                     ┌─────────────────────┐
                     │      Playwright     │
-                    │ Browser Automation  │
+                    │   Browser Automation│
                     └──────────┬──────────┘
                                │
                     ┌──────────┴──────────┐
@@ -1007,25 +1055,25 @@ Reduced HTML:
               Screenshot                HTML
                     │                     │
                     ▼                     ▼
-             Image Optimizer        HTML Reducer
+             Image Optimizer       HTML Reducer
                     │                     │
                     └──────────┬──────────┘
                                ▼
                     ┌─────────────────────┐
-                    │     Qwen VLM        │
-                    │   Visual Analysis   │
+                    │      Qwen VLM       │
+                    │   Visual Analysis    │
                     └──────────┬──────────┘
                                │
                                ▼
                     ┌─────────────────────┐
-                    │  Issue Detection    │
-                    │  + Fix Generation   │
+                    │   Issue Detection   │
+                    │   + Fix Generation  │
                     └──────────┬──────────┘
                                │
                                ▼
                     ┌─────────────────────┐
-                    │   Source Healing    │
-                    │      App.jsx        │
+                    │    Source Healing   │
+                    │       App.jsx       │
                     └──────────┬──────────┘
                                │
                                ▼
@@ -1033,17 +1081,17 @@ Reduced HTML:
                     │ Retest + Verification│
                     └──────────┬──────────┘
                                │
-                  ┌────────────┴────────────┐
-                  ▼                         ▼
-               Fixed                    Not Fixed
-                  │                         │
-                  ▼                         ▼
-             GitHub                    Retry Loop
-                  │
-                  ▼
-          ┌───────────────────┐
-          │   QA Dashboard    │
-          └───────────────────┘
+                    ┌──────────┴──────────┐
+                    ▼                     ▼
+                 Fixed               Not Fixed
+                    │                     │
+                    ▼                     ▼
+                 GitHub              Retry Loop
+                    │
+                    ▼
+             ┌───────────────────┐
+             │    QA Dashboard   │
+             └───────────────────┘
 ```
 
 ---
@@ -1219,24 +1267,10 @@ QA Dashboard
 
 **Sandhya S**
 
-B.Tech Computer Science and Engineering
-
 GitHub:
 
-```text
 https://github.com/Sandhya03242
-```
 
 ---
 
-# 📌 Project
 
-**OmniSight — Multimodal UI Self-Healing & RPA Agent**
-
-> A masterclass in combining visual reasoning models with autonomous agentic workflows.
-
-**Final concept:**
-
-```text
-Observe → Understand → Repair → Verify → Integrate
-```
