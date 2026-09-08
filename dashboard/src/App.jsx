@@ -1148,7 +1148,7 @@ function App() {
                   </strong>
 
                   <span>
-                    Pull request approved successfully
+                     Pull request approved successfully
                   </span>
 
                 </div>
