@@ -951,41 +951,6 @@ Expected:
 
 ---
 
-# 🧪 Automated Testing
-
-The project also includes:
-
-```text
-tests/test_api.py
-```
-
-Install testing dependencies:
-
-```bash
-uv add requests pytest
-```
-
-Run all tests:
-
-```bash
-uv run pytest tests/test_api.py -v
-```
-
-Run navigation test:
-
-```bash
-uv run pytest tests/test_api.py -v -k navigation
-```
-
-Run complete healing test:
-
-```bash
-uv run pytest tests/test_api.py -v -k full_healing
-```
-
-The full healing test can take several minutes because the local VLM performs inference.
-
----
 
 # ✅ Final Testing Checklist
 
